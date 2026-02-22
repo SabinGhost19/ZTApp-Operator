@@ -1,0 +1,30 @@
+{{- if and .Values.rbac.create .Values.falcoTalonRbac.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "zta-operator.fullname" . }}-falco-talon-configmap
+  namespace: {{ .Values.falcoTalonRbac.namespace }}
+  labels:
+    {{- include "zta-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: [{{ .Values.falcoTalonRbac.configMapName | quote }}]
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "zta-operator.fullname" . }}-falco-talon-configmap
+  namespace: {{ .Values.falcoTalonRbac.namespace }}
+  labels:
+    {{- include "zta-operator.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "zta-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ include "zta-operator.fullname" . }}-falco-talon-configmap
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

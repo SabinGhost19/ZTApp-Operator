@@ -1,0 +1,12 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: zta-operator-binding
+subjects:
+  - kind: ServiceAccount
+    name: zta-operator
+    namespace: devsecops-system
+roleRef:
+  kind: ClusterRole
+  name: zta-operator-role
+  apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,25 @@
+apiVersion: devsecops.licenta.ro/v1
+kind: ZeroTrustApplication
+metadata:
+  name: demo-api
+  namespace: default
+spec:
+  image: ghcr.io/sabinghost19/demo-vulnerable-fastapi:v1.0.0
+  replicas: 2
+  supplyChain:
+    requireSignature: true
+    allowedSigner: https://github.com/SabinGhost19/vulfastapi/.github/workflows/ci-cd.yaml@refs/heads/main
+    maxVulnerabilities: High
+  networkZeroTrust:
+    ingressAllowedFrom:
+      - namespace: api-gateway
+    egressAllowedTo:
+      - namespace: database
+        ports: [5432]
+  wafConfig:
+    mode: Block
+    appProfile: REST-API
+  runtimeSecurity:
+    allowedPaths:
+      - /tmp/app-data
+    onCompromise: Isolate

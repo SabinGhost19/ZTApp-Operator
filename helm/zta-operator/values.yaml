@@ -1,0 +1,36 @@
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/sabinghost19/zta-operator
+  tag: v0.1.0
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+serviceAccount:
+  create: true
+  name: zta-operator
+
+operator:
+  logLevel: INFO
+  watchAllNamespaces: true
+  talonNamespace: falco-talon
+  talonConfigMapName: falco-talon-rules
+  talonConfigMapKey: rules.yaml
+
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+rbac:
+  create: true
+
+falcoTalonRbac:
+  enabled: true
+  namespace: falco-talon
+  configMapName: falco-talon-rules
+
+crd:
+  install: true

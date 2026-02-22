@@ -1,0 +1,144 @@
+name: zta-operator-ci
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "src/**"
+      - "requirements.txt"
+      - "Dockerfile"
+      - "helm/zta-operator/**"
+      - ".github/workflows/zta-operator-ci.yaml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "requirements.txt"
+      - "Dockerfile"
+      - "helm/zta-operator/**"
+      - ".github/workflows/zta-operator-ci.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: zta-operator
+  CHART_PATH: helm/zta-operator
+  CHART_NAME: zta-operator
+
+jobs:
+  helm-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+
+      - name: Helm lint
+        run: helm lint ${{ env.CHART_PATH }}
+
+  helm-template:
+    runs-on: ubuntu-latest
+    needs: helm-lint
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+
+      - name: Helm template validation
+        run: helm template zta-operator ${{ env.CHART_PATH }} --namespace devsecops-system > /tmp/zta-operator-rendered.yaml
+
+      - name: Check rendered output is not empty
+        run: test -s /tmp/zta-operator-rendered.yaml
+
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: [helm-lint, helm-template]
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Normalize image repository
+        id: imagevars
+        shell: bash
+        run: |
+          echo "image_repo=${REGISTRY}/${GITHUB_REPOSITORY_OWNER,,}/${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.imagevars.outputs.image_repo }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha,prefix=sha-
+            type=raw,value=v0.1.0,enable={{is_default_branch}}
+
+      - name: Build and push operator image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Summary
+        run: |
+          echo "Pushed image tags:" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+
+  package-and-push-chart:
+    runs-on: ubuntu-latest
+    needs: [helm-lint, helm-template]
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+
+      - name: Normalize chart registry path
+        id: chartvars
+        shell: bash
+        run: |
+          echo "chart_repo=oci://${REGISTRY}/${GITHUB_REPOSITORY_OWNER,,}/charts" >> "$GITHUB_OUTPUT"
+
+      - name: Package Helm chart
+        run: |
+          mkdir -p /tmp/chart-dist
+          helm package ${{ env.CHART_PATH }} --destination /tmp/chart-dist
+
+      - name: Login Helm registry (GHCR)
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+
+      - name: Push Helm chart to GHCR OCI
+        run: |
+          helm push /tmp/chart-dist/${{ env.CHART_NAME }}-*.tgz ${{ steps.chartvars.outputs.chart_repo }}
+
+      - name: Chart summary
+        run: |
+          echo "Pushed Helm chart:" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.chartvars.outputs.chart_repo }}/${{ env.CHART_NAME }}" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,15 @@
+1. Check operator pod status:
+
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/name={{ include "zta-operator.name" . }}
+
+2. Check operator logs:
+
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "zta-operator.fullname" . }} -f
+
+3. Verify CRD available:
+
+  kubectl get crd zerotrustapplications.devsecops.licenta.ro
+
+4. Apply sample ZTA:
+
+  kubectl apply -f deploy/samples/zta-sample.yaml

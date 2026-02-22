@@ -1,0 +1,10 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: zta-operator-falco-talon-configmap
+  namespace: falco-talon
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["falco-talon-rules"]
+    verbs: ["get", "patch", "update"]

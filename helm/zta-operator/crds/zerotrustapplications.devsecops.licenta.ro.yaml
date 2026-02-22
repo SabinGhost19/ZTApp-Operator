@@ -1,0 +1,108 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: zerotrustapplications.devsecops.licenta.ro
+spec:
+  group: devsecops.licenta.ro
+  names:
+    kind: ZeroTrustApplication
+    plural: zerotrustapplications
+    singular: zerotrustapplication
+    shortNames:
+      - zta
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - image
+                - supplyChain
+              properties:
+                image:
+                  type: string
+                replicas:
+                  type: integer
+                  minimum: 1
+                  default: 1
+                supplyChain:
+                  type: object
+                  required:
+                    - requireSignature
+                    - allowedSigner
+                    - maxVulnerabilities
+                  properties:
+                    requireSignature:
+                      type: boolean
+                      default: true
+                    allowedSigner:
+                      type: string
+                    maxVulnerabilities:
+                      type: string
+                      enum: [Low, Medium, High, Critical]
+                networkZeroTrust:
+                  type: object
+                  properties:
+                    ingressAllowedFrom:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          namespace:
+                            type: string
+                    egressAllowedTo:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          namespace:
+                            type: string
+                          ports:
+                            type: array
+                            items:
+                              type: integer
+                wafConfig:
+                  type: object
+                  properties:
+                    mode:
+                      type: string
+                      enum: [Monitor, Block]
+                      default: Block
+                    appProfile:
+                      type: string
+                      default: REST-API
+                runtimeSecurity:
+                  type: object
+                  properties:
+                    allowedPaths:
+                      type: array
+                      items:
+                        type: string
+                    onCompromise:
+                      type: string
+                      enum: [Isolate, Kill]
+                      default: Isolate
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                lastError:
+                  type: string
+                details:
+                  x-kubernetes-preserve-unknown-fields: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Image
+          type: string
+          jsonPath: .spec.image

@@ -1,0 +1,16 @@
+apiVersion: v2
+name: zta-operator
+description: ZeroTrustApplication Kubernetes Operator (Kopf/Python)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - security
+  - devsecops
+  - operator
+  - zerotrust
+home: https://github.com/SabinGhost19/vulfastapi
+sources:
+  - https://github.com/SabinGhost19/vulfastapi
+maintainers:
+  - name: SabinGhost19

@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "zta-operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "zta-operator.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "zta-operator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "zta-operator.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "zta-operator.serviceAccountName" . }}
+      containers:
+        - name: operator
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["kopf", "run", "{{ if .Values.operator.watchAllNamespaces }}--all-namespaces{{ else }}--namespace={{ .Release.Namespace }}{{ end }}", "-m", "zta_operator.operator"]
+          env:
+            - name: LOG_LEVEL
+              value: {{ .Values.operator.logLevel | quote }}
+            - name: TALON_NAMESPACE
+              value: {{ .Values.operator.talonNamespace | quote }}
+            - name: TALON_CONFIGMAP_NAME
+              value: {{ .Values.operator.talonConfigMapName | quote }}
+            - name: TALON_CONFIGMAP_KEY
+              value: {{ .Values.operator.talonConfigMapKey | quote }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
