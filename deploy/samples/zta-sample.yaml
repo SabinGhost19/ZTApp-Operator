@@ -4,7 +4,7 @@ metadata:
   name: demo-api
   namespace: default
 spec:
-  image: ghcr.io/sabinghost19/demo-vulnerable-fastapi:v1.0.0
+  image: ghcr.io/sabinghost19/demo-vulnerable-fastapi:v1.0.2
   replicas: 2
   supplyChain:
     requireSignature: true

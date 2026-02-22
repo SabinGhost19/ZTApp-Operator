@@ -38,7 +38,12 @@ def build_deployment(name: str, namespace: str, image: str, replicas: int, allow
                             "volumeMounts": volume_mounts,
                         }
                     ],
-                    "securityContext": {"runAsNonRoot": True},
+                    "securityContext": {
+                        "runAsNonRoot": True,
+                        "runAsUser": 10001,
+                        "runAsGroup": 10001,
+                        "fsGroup": 10001,
+                    },
                     "volumes": volumes,
                 },
             },
