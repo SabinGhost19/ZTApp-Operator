@@ -55,7 +55,7 @@ spec:
                       default: true
                     requireAttestationType:
                       type: string
-                      default: custom-zta-policy
+                      default: https://devsecops.licenta.ro/attestations/custom-zta-policy/v1
                 runtimeEnforcement:
                   type: object
                   properties:

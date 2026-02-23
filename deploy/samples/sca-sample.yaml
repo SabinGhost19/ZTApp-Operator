@@ -14,7 +14,7 @@ spec:
         maxVersion: "2.15.0"
   policyBinding:
     enabled: true
-    requireAttestationType: custom-zta-policy
+    requireAttestationType: https://devsecops.licenta.ro/attestations/custom-zta-policy/v1
   runtimeEnforcement:
     enabled: true
     onPolicyDrift: Isolate

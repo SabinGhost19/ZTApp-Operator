@@ -296,7 +296,15 @@ def validate_admission_with_attestations(
         sbom_digest = _hash_json(sbom_predicate)
 
     if bool(policy_binding.get("enabled", False)):
-        attestation_type = str(policy_binding.get("requireAttestationType", "custom-zta-policy")).strip() or "custom-zta-policy"
+        attestation_type = (
+            str(
+                policy_binding.get(
+                    "requireAttestationType",
+                    "https://devsecops.licenta.ro/attestations/custom-zta-policy/v1",
+                )
+            ).strip()
+            or "https://devsecops.licenta.ro/attestations/custom-zta-policy/v1"
+        )
         policy_attestation = _verify_attestation_by_type(
             image=resolved_image,
             attestation_type=attestation_type,
