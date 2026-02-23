@@ -1,3 +1,10 @@
+## [1.0.2](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.0.1...v1.0.2) (2026-02-23)
+
+
+### Bug Fixes
+
+* realeaserc successComment: false ([951eb15](https://github.com/SabinGhost19/ZTApp-Operator/commit/951eb1517d9b0c3500dbc042bf401d10558fe630))
+
 ## [1.0.1](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.0.0...v1.0.1) (2026-02-23)
 
 
