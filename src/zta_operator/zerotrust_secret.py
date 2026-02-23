@@ -154,7 +154,12 @@ def _build_external_secret(
     return external_secret, target_secret_name
 
 
-def _get_target(namespace: str, target_workload: dict, apps: client.AppsV1Api) -> tuple[str, str, dict]:
+def _get_target(
+    namespace: str,
+    target_workload: dict,
+    apps: client.AppsV1Api,
+    api_client: client.ApiClient,
+) -> tuple[str, str, dict]:
     kind = str(target_workload.get("kind", "")).strip()
     name = str(target_workload.get("name", "")).strip()
     workload_ns = str(target_workload.get("namespace", namespace)).strip() or namespace
@@ -165,13 +170,13 @@ def _get_target(namespace: str, target_workload: dict, apps: client.AppsV1Api) -
         raise ZeroTrustSecretError("targetWorkload.name is required")
 
     if kind == "Deployment":
-        obj = apps.read_namespaced_deployment(name=name, namespace=workload_ns).to_dict()
+        obj = apps.read_namespaced_deployment(name=name, namespace=workload_ns)
     elif kind == "StatefulSet":
-        obj = apps.read_namespaced_stateful_set(name=name, namespace=workload_ns).to_dict()
+        obj = apps.read_namespaced_stateful_set(name=name, namespace=workload_ns)
     else:
-        obj = apps.read_namespaced_daemon_set(name=name, namespace=workload_ns).to_dict()
+        obj = apps.read_namespaced_daemon_set(name=name, namespace=workload_ns)
 
-    return kind, workload_ns, obj
+    return kind, workload_ns, api_client.sanitize_for_serialization(obj)
 
 
 def _patch_target(kind: str, namespace: str, name: str, patch_body: dict, apps: client.AppsV1Api) -> None:
@@ -204,7 +209,7 @@ def _inject_mapping_to_workload(
         raise ZeroTrustSecretError("Target workload first container has no name")
 
     env = first_container.get("env", []) or []
-    volume_mounts = first_container.get("volume_mounts", []) or first_container.get("volumeMounts", []) or []
+    volume_mounts = first_container.get("volumeMounts", []) or []
     volumes = pod_spec.get("volumes", []) or []
 
     for index, item in enumerate(mapping):
@@ -382,6 +387,7 @@ def _checksum_secret_data(secret_obj: dict) -> str:
 
 
 def _apply_rolling_restart_annotation(
+    api_client: client.ApiClient,
     apps: client.AppsV1Api,
     target_kind: str,
     target_namespace: str,
@@ -390,11 +396,17 @@ def _apply_rolling_restart_annotation(
     checksum: str,
 ) -> None:
     if target_kind == "Deployment":
-        target_obj = apps.read_namespaced_deployment(name=target_name, namespace=target_namespace).to_dict()
+        target_obj = api_client.sanitize_for_serialization(
+            apps.read_namespaced_deployment(name=target_name, namespace=target_namespace)
+        )
     elif target_kind == "StatefulSet":
-        target_obj = apps.read_namespaced_stateful_set(name=target_name, namespace=target_namespace).to_dict()
+        target_obj = api_client.sanitize_for_serialization(
+            apps.read_namespaced_stateful_set(name=target_name, namespace=target_namespace)
+        )
     else:
-        target_obj = apps.read_namespaced_daemon_set(name=target_name, namespace=target_namespace).to_dict()
+        target_obj = api_client.sanitize_for_serialization(
+            apps.read_namespaced_daemon_set(name=target_name, namespace=target_namespace)
+        )
 
     annotations = target_obj["spec"]["template"].get("metadata", {}).get("annotations", {}) or {}
     annotations[f"vault-secret-checksum/{_sanitize_name(zts_name)}"] = checksum
@@ -429,7 +441,12 @@ def reconcile_zerotrust_secret(spec: dict, name: str, namespace: str, body: dict
         _zts_status_patch(custom, namespace, name, {"phase": "Validating", "lastError": ""})
 
         target_workload = spec.get("targetWorkload", {}) or {}
-        target_kind, target_namespace, target_obj = _get_target(namespace=namespace, target_workload=target_workload, apps=apps)
+        target_kind, target_namespace, target_obj = _get_target(
+            namespace=namespace,
+            target_workload=target_workload,
+            apps=apps,
+            api_client=api_client,
+        )
 
         ztc = spec.get("zeroTrustConditions", {}) or {}
         _validate_zero_trust_conditions(namespace=namespace, target_workload=target_workload, ztc=ztc, custom=custom)
@@ -502,7 +519,12 @@ def cleanup_zerotrust_secret(spec: dict, name: str, namespace: str, body: dict, 
 
     try:
         target_workload = spec.get("targetWorkload", {}) or {}
-        target_kind, target_namespace, target_obj = _get_target(namespace=namespace, target_workload=target_workload, apps=apps)
+        target_kind, target_namespace, target_obj = _get_target(
+            namespace=namespace,
+            target_workload=target_workload,
+            apps=apps,
+            api_client=api_client,
+        )
         target_name = str(target_workload.get("name", "")).strip()
 
         secret_data = spec.get("secretData", {}) or {}
@@ -515,7 +537,7 @@ def cleanup_zerotrust_secret(spec: dict, name: str, namespace: str, body: dict, 
         first_container = containers[0]
         container_name = first_container.get("name")
         env = first_container.get("env", []) or []
-        volume_mounts = first_container.get("volume_mounts", []) or first_container.get("volumeMounts", []) or []
+        volume_mounts = first_container.get("volumeMounts", []) or []
         volumes = pod_spec.get("volumes", []) or []
 
         env_to_remove = set()
@@ -605,6 +627,7 @@ def on_managed_secret_update(body: dict, namespace: str, name: str, **_: Any) ->
 
         checksum = _checksum_secret_data(body)
         _apply_rolling_restart_annotation(
+            api_client=api_client,
             apps=apps,
             target_kind=target_kind,
             target_namespace=target_ns,
