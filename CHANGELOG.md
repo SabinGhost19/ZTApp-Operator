@@ -1,3 +1,10 @@
+## [1.0.1](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.0.0...v1.0.1) (2026-02-23)
+
+
+### Bug Fixes
+
+* default attestation name ([19fc8d9](https://github.com/SabinGhost19/ZTApp-Operator/commit/19fc8d9fec3d1c66d9f2dd0b9cd74f16b43d7b0f))
+
 # 1.0.0 (2026-02-23)
 
 
