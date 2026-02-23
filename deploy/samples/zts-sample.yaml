@@ -1,0 +1,36 @@
+apiVersion: devsecops.licenta.ro/v1
+kind: ZeroTrustSecret
+metadata:
+  name: demo-api-db-secret
+  namespace: default
+spec:
+  targetWorkload:
+    kind: Deployment
+    name: demo-api
+    namespace: default
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: vault-backend
+  targetSecretName: demo-api-db-secret
+  secretData:
+    remotePath: secret/data/prod/demo-api/config
+    mapping:
+      - remoteKey: password
+        localKey: DB_PASSWORD
+        type: EnvVar
+      - remoteKey: username
+        localKey: DB_USERNAME
+        type: EnvVar
+      - remoteKey: password
+        localKey: db-password
+        type: VolumeMount
+        mountPath: /var/run/secrets/certs/
+  zeroTrustConditions:
+    requireCleanSupplyChain: true
+    maxAllowedVulnerability: High
+    requireNetworkIsolation: true
+    timeBasedAccess:
+      enabled: false
+  lifecycle:
+    refreshInterval: 1m
+    onUpdateAction: RollingRestart

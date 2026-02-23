@@ -5,6 +5,18 @@ VERSION = "v1"
 PLURAL = "zerotrustapplications"
 KIND = "ZeroTrustApplication"
 
+ZTS_PLURAL = "zerotrustsecrets"
+ZTS_KIND = "ZeroTrustSecret"
+
+EXTERNAL_SECRETS_GROUP = "external-secrets.io"
+EXTERNAL_SECRETS_VERSION = "v1beta1"
+EXTERNAL_SECRETS_PLURAL = "externalsecrets"
+
+ZTS_MANAGED_LABEL_KEY = "zta.devsecops/managed-secret"
+ZTS_MANAGED_LABEL_VALUE = "true"
+ZTS_LABEL_NAME = "zta.devsecops/zts-name"
+ZTS_LABEL_NAMESPACE = "zta.devsecops/zts-namespace"
+
 DEFAULT_ISSUER = "https://token.actions.githubusercontent.com"
 
 TALON_NAMESPACE = os.getenv("TALON_NAMESPACE", "falco-talon")

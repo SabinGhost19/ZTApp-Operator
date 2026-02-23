@@ -13,3 +13,7 @@
 4. Apply sample ZTA:
 
   kubectl apply -f deploy/samples/zta-sample.yaml
+
+5. Apply sample ZTS:
+
+  kubectl apply -f deploy/samples/zts-sample.yaml

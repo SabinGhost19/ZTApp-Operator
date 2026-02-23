@@ -18,6 +18,7 @@ from .resources import (
 )
 from .supply_chain import SupplyChainError, verify_supply_chain
 from .talon import TalonConfigError, delete_talon_rule, upsert_talon_rule
+from . import zerotrust_secret  # noqa: F401
 
 logger = configure_logging()
 
