@@ -16,9 +16,16 @@ from .resources import (
     build_service,
     build_wasm_plugin,
 )
+from .supply_chain_attestation import (
+    SupplyChainPolicyError,
+    apply_sanction,
+    check_runtime_drift,
+    validate_admission_with_attestations,
+)
 from .supply_chain import SupplyChainError, verify_supply_chain
 from .talon import TalonConfigError, delete_talon_rule, upsert_talon_rule
 from . import zerotrust_secret  # noqa: F401
+from . import supply_chain_attestation  # noqa: F401
 
 logger = configure_logging()
 
@@ -69,6 +76,7 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
     api_client = client.ApiClient()
     custom = client.CustomObjectsApi(api_client)
     core = client.CoreV1Api(api_client)
+    current_status = body.get("status", {}) or {}
 
     image = str(spec.get("image", "")).strip()
     replicas = int(spec.get("replicas", 1))
@@ -91,6 +99,29 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
 
     try:
         _status_patch(custom, namespace, name, {"phase": "Validating", "lastError": ""})
+
+        compliant, violations, sanction = check_runtime_drift(
+            api_client=api_client,
+            namespace=namespace,
+            app_name=name,
+            current_spec=spec,
+            current_status=current_status,
+        )
+        if not compliant:
+            state = apply_sanction(api_client=api_client, namespace=namespace, app_name=name, sanction=sanction)
+            _status_patch(
+                custom,
+                namespace,
+                name,
+                {
+                    "phase": "Degraded",
+                    "securityState": state,
+                    "activeViolations": violations,
+                    "lastError": "; ".join(violations),
+                },
+            )
+            adapter.warning("Runtime policy drift detected and sanctioned", extra={"event": "runtime-drift-enforced"})
+            raise kopf.PermanentError("Runtime policy drift detected")
 
         adapter.info("Starting supply-chain verification", extra={"event": "supply-chain-start"})
         result = verify_supply_chain(
@@ -116,7 +147,27 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
             )
             raise kopf.PermanentError(f"Supply chain verification failed: {result.reason}")
 
-        _status_patch(custom, namespace, name, {"phase": "Provisioning", "lastError": ""})
+        attestation_status = current_status if current_status.get("attestations") else validate_admission_with_attestations(
+            api_client=api_client,
+            namespace=namespace,
+            app_name=name,
+            image=image,
+            spec=spec,
+        )
+
+        _status_patch(
+            custom,
+            namespace,
+            name,
+            {
+                "phase": "Provisioning",
+                "lastError": "",
+                "securityState": attestation_status.get("securityState", "Compliant"),
+                "attestations": attestation_status.get("attestations", {}),
+                "activeViolations": attestation_status.get("activeViolations", []),
+                "lastVerified": attestation_status.get("lastVerified"),
+            },
+        )
 
         owner = _owner_reference(body)
         objects = [
@@ -149,8 +200,23 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
         upsert_talon_rule(core=core, app_namespace=namespace, app_name=name, falco_rule_name=falco_rule_name)
         adapter.info("Patched Talon rules ConfigMap", extra={"event": "talon-configmap-upsert"})
 
-        _status_patch(custom, namespace, name, {"phase": "Running", "lastError": ""})
+        _status_patch(custom, namespace, name, {"phase": "Running", "lastError": "", "securityState": "Compliant", "activeViolations": []})
         adapter.info("Reconciliation completed", extra={"event": "reconcile-success", "phase": "Running"})
+
+    except SupplyChainPolicyError as exc:
+        _status_patch(
+            custom,
+            namespace,
+            name,
+            {
+                "phase": "Failed_SupplyChain",
+                "securityState": "NonCompliant",
+                "activeViolations": [str(exc)],
+                "lastError": str(exc),
+            },
+        )
+        adapter.exception("Policy attestation validation failed", extra={"event": "attestation-policy-failed"})
+        raise kopf.PermanentError(str(exc)) from exc
 
     except (SupplyChainError, TalonConfigError, ApiException, ValueError) as exc:
         _status_patch(custom, namespace, name, {"phase": "Degraded", "lastError": str(exc)})

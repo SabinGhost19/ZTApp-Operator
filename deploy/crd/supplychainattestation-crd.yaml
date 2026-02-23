@@ -1,0 +1,72 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: supplychainattestations.devsecops.licenta.ro
+spec:
+  group: devsecops.licenta.ro
+  names:
+    kind: SupplyChainAttestation
+    plural: supplychainattestations
+    singular: supplychainattestation
+    shortNames:
+      - sca
+  scope: Cluster
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                sourceValidation:
+                  type: object
+                  properties:
+                    enforceCosign:
+                      type: boolean
+                      default: true
+                    trustedIssuers:
+                      type: array
+                      items:
+                        type: string
+                sbomPolicy:
+                  type: object
+                  properties:
+                    enforceSBOM:
+                      type: boolean
+                      default: true
+                    forbiddenPackages:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          name:
+                            type: string
+                          maxVersion:
+                            type: string
+                policyBinding:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: true
+                    requireAttestationType:
+                      type: string
+                      default: custom-zta-policy
+                runtimeEnforcement:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: true
+                    onPolicyDrift:
+                      type: string
+                      enum: [Isolate, Kill, Alert]
+                      default: Isolate
+      additionalPrinterColumns:
+        - name: DriftAction
+          type: string
+          jsonPath: .spec.runtimeEnforcement.onPolicyDrift

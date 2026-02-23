@@ -17,6 +17,10 @@ ZTS_MANAGED_LABEL_VALUE = "true"
 ZTS_LABEL_NAME = "zta.devsecops/zts-name"
 ZTS_LABEL_NAMESPACE = "zta.devsecops/zts-namespace"
 
+SCA_PLURAL = "supplychainattestations"
+SCA_KIND = "SupplyChainAttestation"
+SCA_GLOBAL_NAME = os.getenv("SCA_GLOBAL_NAME", "global-security-policy")
+
 DEFAULT_ISSUER = "https://token.actions.githubusercontent.com"
 
 TALON_NAMESPACE = os.getenv("TALON_NAMESPACE", "falco-talon")

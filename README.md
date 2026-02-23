@@ -8,6 +8,7 @@ Operator custom pentru `ZeroTrustApplication` cu:
 - Falco custom rules
 - Falco Talon integration prin patch pe ConfigMap (`falco-talon-rules` / `rules.yaml`)
 - ZeroTrustSecret lifecycle (Vault + ESO delegation + mutating injection + rolling restart)
+- SupplyChainAttestation global policy (SBOM + policy binding + continuous compliance)
 
 ## Structură
 
@@ -57,6 +58,7 @@ Aplică în ordine:
 ```bash
 kubectl apply -f deploy/crd/zerotrustapplication-crd.yaml
 kubectl apply -f deploy/crd/zerotrustsecret-crd.yaml
+kubectl apply -f deploy/crd/supplychainattestation-crd.yaml
 kubectl apply -f deploy/rbac/serviceaccount.yaml
 kubectl apply -f deploy/rbac/clusterrole.yaml
 kubectl apply -f deploy/rbac/clusterrolebinding.yaml
@@ -70,6 +72,7 @@ Sample resources:
 ```bash
 kubectl apply -f deploy/samples/zta-sample.yaml
 kubectl apply -f deploy/samples/zts-sample.yaml
+kubectl apply -f deploy/samples/sca-sample.yaml
 ```
 
 ## Deploy cu Helm (recomandat)

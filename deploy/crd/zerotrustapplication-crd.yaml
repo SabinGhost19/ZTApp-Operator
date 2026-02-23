@@ -95,6 +95,16 @@ spec:
                   type: string
                 lastError:
                   type: string
+                securityState:
+                  type: string
+                lastVerified:
+                  type: string
+                activeViolations:
+                  type: array
+                  items:
+                    type: string
+                attestations:
+                  x-kubernetes-preserve-unknown-fields: true
                 details:
                   x-kubernetes-preserve-unknown-fields: true
       subresources:
