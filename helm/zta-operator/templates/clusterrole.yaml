@@ -17,7 +17,7 @@ rules:
     verbs: ["get", "list", "watch", "patch", "update"]
   - apiGroups: ["devsecops.licenta.ro"]
     resources: ["supplychainattestations"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "patch", "update"]
   - apiGroups: ["external-secrets.io"]
     resources: ["externalsecrets"]
     verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
