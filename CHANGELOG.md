@@ -1,3 +1,10 @@
+## [1.1.2](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.1.1...v1.1.2) (2026-02-24)
+
+
+### Bug Fixes
+
+* rbac patch and delete for SCA ([63fdd98](https://github.com/SabinGhost19/ZTApp-Operator/commit/63fdd98ff22e302329625f8660f2b9cf4711af0f))
+
 ## [1.1.1](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.1.0...v1.1.1) (2026-02-24)
 
 
