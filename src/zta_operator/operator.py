@@ -96,6 +96,7 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
 
     runtime = spec.get("runtimeSecurity", {})
     allowed_paths = runtime.get("allowedPaths", []) or []
+    labels = ((body.get("metadata", {}) or {}).get("labels", {}) or {})
 
     try:
         _status_patch(custom, namespace, name, {"phase": "Validating", "lastError": ""})
@@ -106,6 +107,7 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
             app_name=name,
             current_spec=spec,
             current_status=current_status,
+            labels=labels,
         )
         if not compliant:
             state = apply_sanction(api_client=api_client, namespace=namespace, app_name=name, sanction=sanction)
@@ -153,6 +155,7 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
             app_name=name,
             image=image,
             spec=spec,
+            labels=labels,
         )
 
         _status_patch(

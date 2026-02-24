@@ -19,7 +19,6 @@ ZTS_LABEL_NAMESPACE = "zta.devsecops/zts-namespace"
 
 SCA_PLURAL = "supplychainattestations"
 SCA_KIND = "SupplyChainAttestation"
-SCA_GLOBAL_NAME = os.getenv("SCA_GLOBAL_NAME", "global-security-policy")
 
 DEFAULT_ISSUER = "https://token.actions.githubusercontent.com"
 

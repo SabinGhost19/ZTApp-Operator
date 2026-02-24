@@ -1,8 +1,11 @@
 apiVersion: devsecops.licenta.ro/v1
 kind: SupplyChainAttestation
 metadata:
-  name: global-security-policy
+  name: demo-app-security-policy
 spec:
+  target:
+    ztaName: demo-vulnerable-fastapi
+    ztaNamespace: default
   sourceValidation:
     enforceCosign: true
     trustedIssuers:
@@ -15,6 +18,9 @@ spec:
   policyBinding:
     enabled: true
     requireAttestationType: https://devsecops.licenta.ro/attestations/custom-zta-policy/v1
+  strictManifestHash:
+    enabled: true
+    enforcementAction: Reject
   runtimeEnforcement:
     enabled: true
     onPolicyDrift: Isolate
