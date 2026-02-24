@@ -1,3 +1,10 @@
+# [1.1.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.0.2...v1.1.0) (2026-02-24)
+
+
+### Features
+
+* SCA crd added with zta selector ([137cd8e](https://github.com/SabinGhost19/ZTApp-Operator/commit/137cd8ecec9ad61c6b86f7e1a1435defc3c959ac))
+
 ## [1.0.2](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.0.1...v1.0.2) (2026-02-23)
 
 
