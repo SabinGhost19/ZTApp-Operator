@@ -1,3 +1,10 @@
+# [1.2.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.1.4...v1.2.0) (2026-02-25)
+
+
+### Features
+
+* added logging for sca resource reconcile ([f001d7b](https://github.com/SabinGhost19/ZTApp-Operator/commit/f001d7bd196abb5014224cade04a3370db67ac87))
+
 ## [1.1.4](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.1.3...v1.1.4) (2026-02-25)
 
 
