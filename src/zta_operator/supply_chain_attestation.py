@@ -41,8 +41,23 @@ def _hash_json(payload: Any) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
+def _to_jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_to_jsonable(item) for item in value]
+    if hasattr(value, "to_dict"):
+        return _to_jsonable(value.to_dict())
+    if hasattr(value, "__dict__"):
+        return _to_jsonable(vars(value))
+    return str(value)
+
+
 def _hash_spec_payload(payload: dict[str, Any]) -> str:
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    obj = _to_jsonable(payload)
+    encoded = json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
