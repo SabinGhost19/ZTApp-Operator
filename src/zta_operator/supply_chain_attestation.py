@@ -310,6 +310,62 @@ def _get_matching_policy(
     return matched[0]
 
 
+def _explain_policy_target_match(
+    policy: dict[str, Any],
+    namespace: str,
+    app_name: str,
+    labels: dict[str, str],
+) -> dict[str, Any]:
+    meta = policy.get("metadata", {}) or {}
+    spec = policy.get("spec", {}) or {}
+    target = spec.get("target", {}) or {}
+
+    target_name = str(target.get("ztaName", "")).strip()
+    target_namespace = str(target.get("ztaNamespace", "")).strip()
+    selector_labels = (((target.get("selector", {}) or {}).get("matchLabels", {}) or {}))
+
+    reasons: list[str] = []
+
+    if not target_name and not selector_labels:
+        reasons.append("policy target is empty (set target.ztaName and/or target.selector.matchLabels)")
+
+    if target_name and target_name != app_name:
+        reasons.append(f"target.ztaName mismatch: expected '{target_name}', got '{app_name}'")
+
+    if target_namespace and target_namespace != namespace:
+        reasons.append(f"target.ztaNamespace mismatch: expected '{target_namespace}', got '{namespace}'")
+
+    for key, expected in selector_labels.items():
+        actual = labels.get(str(key))
+        if str(expected) != str(actual):
+            reasons.append(f"selector label mismatch for '{key}': expected '{expected}', got '{actual}'")
+
+    matched = len(reasons) == 0 and bool(target_name or selector_labels)
+    return {
+        "policyName": str(meta.get("name", "")),
+        "target": target,
+        "matched": matched,
+        "reasons": reasons,
+    }
+
+
+def _collect_policy_match_diagnostics(
+    custom: client.CustomObjectsApi,
+    namespace: str,
+    app_name: str,
+    labels: dict[str, str],
+) -> dict[str, Any]:
+    items = custom.list_cluster_custom_object(group=GROUP, version=VERSION, plural=SCA_PLURAL).get("items", []) or []
+    evaluations = [_explain_policy_target_match(item, namespace=namespace, app_name=app_name, labels=labels) for item in items]
+    return {
+        "namespace": namespace,
+        "appName": app_name,
+        "labels": labels,
+        "candidateCount": len(evaluations),
+        "candidates": evaluations,
+    }
+
+
 def _status_patch(custom: client.CustomObjectsApi, namespace: str, name: str, patch: dict[str, Any]) -> None:
     custom.patch_namespaced_custom_object_status(
         group=GROUP,
@@ -368,14 +424,34 @@ def validate_admission_with_attestations(
 
     matched_policy = _get_matching_policy(custom, namespace=namespace, app_name=app_name, labels=labels)
     if not matched_policy:
+        diagnostics = _collect_policy_match_diagnostics(custom, namespace=namespace, app_name=app_name, labels=labels)
+        logger.info(
+            "No matching SupplyChainAttestation found for application",
+            extra={
+                "event": "attestation-policy-missing",
+                "zta_name": app_name,
+                "zta_namespace": namespace,
+                "candidate_count": diagnostics.get("candidateCount", 0),
+            },
+        )
         return {
             "securityState": "Compliant",
             "attestations": {},
             "activeViolations": [],
             "lastVerified": datetime.now(timezone.utc).isoformat(),
+            "policyMatchDebug": diagnostics,
         }
 
     global_spec = matched_policy.get("spec", {}) or {}
+    logger.info(
+        "Matched SupplyChainAttestation for application",
+        extra={
+            "event": "attestation-policy-matched",
+            "zta_name": app_name,
+            "zta_namespace": namespace,
+            "policy_name": str((matched_policy.get("metadata", {}) or {}).get("name", "")),
+        },
+    )
     trusted_issuers = [str(x).strip() for x in (global_spec.get("sourceValidation", {}) or {}).get("trustedIssuers", []) or [] if str(x).strip()]
     if not trusted_issuers:
         raise SupplyChainPolicyError("SupplyChainAttestation sourceValidation.trustedIssuers is empty")
@@ -402,6 +478,16 @@ def validate_admission_with_attestations(
         sbom_predicate = sbom_attestation.get("predicate", {}) or {}
         sbom_packages = _extract_sbom_packages(sbom_predicate)
         sbom_digest = _hash_json(sbom_predicate)
+        logger.info(
+            "SBOM attestation extracted",
+            extra={
+                "event": "attestation-sbom-extracted",
+                "zta_name": app_name,
+                "zta_namespace": namespace,
+                "sbom_packages_count": len(sbom_packages),
+                "sbom_digest": sbom_digest,
+            },
+        )
 
     if bool(policy_binding.get("enabled", False)):
         attestation_type = (
@@ -421,6 +507,16 @@ def validate_admission_with_attestations(
         policy_predicate = policy_attestation.get("predicate", {}) or {}
         policy_digest = _hash_json(policy_predicate)
         expected_infra_hash = str(policy_predicate.get("expected_infra_hash", "")).strip()
+        logger.info(
+            "Policy attestation extracted",
+            extra={
+                "event": "attestation-policy-extracted",
+                "zta_name": app_name,
+                "zta_namespace": namespace,
+                "policy_digest": policy_digest,
+                "expected_infra_hash": expected_infra_hash,
+            },
+        )
 
     violations: list[str] = []
     violations.extend(_validate_sbom_against_policy(sbom_packages, sbom_policy))
@@ -430,6 +526,18 @@ def validate_admission_with_attestations(
         spec=spec,
         strict_manifest_hash=strict_manifest_hash,
         expected_hash=expected_infra_hash,
+    )
+    logger.info(
+        "Manifest hash validation completed",
+        extra={
+            "event": "attestation-hash-validated",
+            "zta_name": app_name,
+            "zta_namespace": namespace,
+            "strict_manifest_hash_enabled": bool(strict_manifest_hash.get("enabled", False)),
+            "expected_infra_hash": expected_infra_hash,
+            "computed_infra_hash": computed_infra_hash,
+            "hash_violations_count": len(hash_violations),
+        },
     )
     violations.extend(hash_violations)
 
@@ -555,7 +663,12 @@ def on_supply_chain_policy_update(body: dict, **_: Any) -> None:
     custom = client.CustomObjectsApi(api_client)
 
     try:
+        adapter.info("SupplyChainAttestation reconciliation triggered", extra={"event": "sca-reconcile-start"})
         evaluations = reevaluate_policy_targets(api_client=api_client, policy=body)
+        adapter.info(
+            "SupplyChainAttestation target evaluation completed",
+            extra={"event": "sca-reconcile-evaluated", "targets_count": len(evaluations)},
+        )
         for entry in evaluations:
             app_name = entry["name"]
             app_ns = entry["namespace"]
@@ -595,3 +708,8 @@ def on_supply_chain_policy_update(body: dict, **_: Any) -> None:
     except ApiException as exc:
         adapter.exception("Continuous compliance update failed", extra={"event": "sca-update-error"})
         raise kopf.TemporaryError(str(exc), delay=30) from exc
+
+
+@kopf.on.create(GROUP, VERSION, SCA_PLURAL)
+def on_supply_chain_policy_create(body: dict, **kwargs: Any) -> None:
+    on_supply_chain_policy_update(body=body, **kwargs)

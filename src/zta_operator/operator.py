@@ -160,6 +160,29 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
             labels=labels,
         )
 
+        attestations = attestation_status.get("attestations", {}) or {}
+        policy_match_debug = attestation_status.get("policyMatchDebug", {}) or {}
+        if attestations:
+            adapter.info(
+                "Supply-chain attestation validation completed",
+                extra={
+                    "event": "attestation-validated",
+                    "policy_name": attestations.get("policyName", ""),
+                    "resolved_image": attestations.get("resolvedImage", ""),
+                    "expected_infra_hash": attestations.get("expectedInfraHash", ""),
+                    "computed_infra_hash": attestations.get("computedInfraHash", ""),
+                },
+            )
+        else:
+            adapter.info(
+                "No matching SupplyChainAttestation found for application",
+                extra={
+                    "event": "attestation-policy-missing",
+                    "candidate_count": policy_match_debug.get("candidateCount", 0),
+                    "candidates": policy_match_debug.get("candidates", []),
+                },
+            )
+
         _status_patch(
             custom,
             namespace,
@@ -168,7 +191,8 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
                 "phase": "Provisioning",
                 "lastError": "",
                 "securityState": attestation_status.get("securityState", "Compliant"),
-                "attestations": attestation_status.get("attestations", {}),
+                "attestations": attestations,
+                "policyMatchDebug": policy_match_debug,
                 "activeViolations": attestation_status.get("activeViolations", []),
                 "lastVerified": attestation_status.get("lastVerified"),
             },
@@ -213,7 +237,8 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
                 "phase": "Running",
                 "lastError": "",
                 "securityState": attestation_status.get("securityState", "Compliant"),
-                "attestations": attestation_status.get("attestations", {}),
+                "attestations": attestations,
+                "policyMatchDebug": policy_match_debug,
                 "activeViolations": attestation_status.get("activeViolations", []),
                 "lastVerified": attestation_status.get("lastVerified"),
             },
