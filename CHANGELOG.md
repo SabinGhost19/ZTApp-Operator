@@ -1,3 +1,10 @@
+## [1.1.3](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.1.2...v1.1.3) (2026-02-25)
+
+
+### Bug Fixes
+
+* jsonable traversal in operator ([3df7e20](https://github.com/SabinGhost19/ZTApp-Operator/commit/3df7e20058e98f8b96c449895bc6d807555e7876))
+
 ## [1.1.2](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.1.1...v1.1.2) (2026-02-24)
 
 
