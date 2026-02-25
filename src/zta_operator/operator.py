@@ -78,23 +78,25 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
     core = client.CoreV1Api(api_client)
     current_status = body.get("status", {}) or {}
 
-    image = str(spec.get("image", "")).strip()
-    replicas = int(spec.get("replicas", 1))
+    desired_spec = body.get("spec", {}) or dict(spec)
 
-    supply = spec.get("supplyChain", {})
+    image = str(desired_spec.get("image", "")).strip()
+    replicas = int(desired_spec.get("replicas", 1))
+
+    supply = desired_spec.get("supplyChain", {})
     require_signature = bool(supply.get("requireSignature", True))
     allowed_signer = str(supply.get("allowedSigner", "")).strip()
     max_vuln = str(supply.get("maxVulnerabilities", "Medium")).strip()
 
-    network = spec.get("networkZeroTrust", {})
+    network = desired_spec.get("networkZeroTrust", {})
     ingress_allowed_from = network.get("ingressAllowedFrom", []) or []
     egress_allowed_to = network.get("egressAllowedTo", []) or []
 
-    waf = spec.get("wafConfig", {})
+    waf = desired_spec.get("wafConfig", {})
     waf_mode = str(waf.get("mode", "Block")).strip()
     app_profile = str(waf.get("appProfile", "REST-API")).strip()
 
-    runtime = spec.get("runtimeSecurity", {})
+    runtime = desired_spec.get("runtimeSecurity", {})
     allowed_paths = runtime.get("allowedPaths", []) or []
     labels = ((body.get("metadata", {}) or {}).get("labels", {}) or {})
 
@@ -105,7 +107,7 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
             api_client=api_client,
             namespace=namespace,
             app_name=name,
-            current_spec=spec,
+            current_spec=desired_spec,
             current_status=current_status,
             labels=labels,
         )
@@ -154,7 +156,7 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
             namespace=namespace,
             app_name=name,
             image=image,
-            spec=spec,
+            spec=desired_spec,
             labels=labels,
         )
 

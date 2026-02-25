@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import subprocess
+from collections.abc import Mapping, Sequence, Set
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -41,17 +42,41 @@ def _hash_json(payload: Any) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
-def _to_jsonable(value: Any) -> Any:
+def _to_jsonable(value: Any, seen: set[int] | None = None, depth: int = 0, max_depth: int = 32) -> Any:
+    if seen is None:
+        seen = set()
+
+    if depth > max_depth:
+        return "<max-depth>"
+
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
-    if isinstance(value, dict):
-        return {str(k): _to_jsonable(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_to_jsonable(item) for item in value]
+
+    obj_id = id(value)
+    if obj_id in seen:
+        return "<recursive>"
+
+    if isinstance(value, Mapping):
+        seen.add(obj_id)
+        return {str(k): _to_jsonable(v, seen, depth + 1, max_depth) for k, v in value.items()}
+
+    if isinstance(value, Set):
+        seen.add(obj_id)
+        normalized = [_to_jsonable(item, seen, depth + 1, max_depth) for item in value]
+        return sorted(normalized, key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")))
+
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        seen.add(obj_id)
+        return [_to_jsonable(item, seen, depth + 1, max_depth) for item in value]
+
     if hasattr(value, "to_dict"):
-        return _to_jsonable(value.to_dict())
+        seen.add(obj_id)
+        return _to_jsonable(value.to_dict(), seen, depth + 1, max_depth)
+
     if hasattr(value, "__dict__"):
-        return _to_jsonable(vars(value))
+        seen.add(obj_id)
+        return _to_jsonable(vars(value), seen, depth + 1, max_depth)
+
     return str(value)
 
 
