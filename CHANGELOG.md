@@ -1,3 +1,10 @@
+## [1.1.4](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.1.3...v1.1.4) (2026-02-25)
+
+
+### Bug Fixes
+
+* recursive reconcile per zta spec ([b2f30a5](https://github.com/SabinGhost19/ZTApp-Operator/commit/b2f30a511ebc17c2ed7dd9cb78d9fd205bab84b1))
+
 ## [1.1.3](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.1.2...v1.1.3) (2026-02-25)
 
 
