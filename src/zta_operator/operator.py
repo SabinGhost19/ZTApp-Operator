@@ -205,7 +205,19 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
         upsert_talon_rule(core=core, app_namespace=namespace, app_name=name, falco_rule_name=falco_rule_name)
         adapter.info("Patched Talon rules ConfigMap", extra={"event": "talon-configmap-upsert"})
 
-        _status_patch(custom, namespace, name, {"phase": "Running", "lastError": "", "securityState": "Compliant", "activeViolations": []})
+        _status_patch(
+            custom,
+            namespace,
+            name,
+            {
+                "phase": "Running",
+                "lastError": "",
+                "securityState": attestation_status.get("securityState", "Compliant"),
+                "attestations": attestation_status.get("attestations", {}),
+                "activeViolations": attestation_status.get("activeViolations", []),
+                "lastVerified": attestation_status.get("lastVerified"),
+            },
+        )
         adapter.info("Reconciliation completed", extra={"event": "reconcile-success", "phase": "Running"})
 
     except SupplyChainPolicyError as exc:
