@@ -1,3 +1,10 @@
+# [1.3.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.2.0...v1.3.0) (2026-04-16)
+
+
+### Features
+
+* provenance enforcer added ([613c945](https://github.com/SabinGhost19/ZTApp-Operator/commit/613c94560869f8e09554d76411da238d325b8040))
+
 # [1.2.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.1.4...v1.2.0) (2026-02-25)
 
 
