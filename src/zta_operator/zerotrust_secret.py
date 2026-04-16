@@ -13,7 +13,6 @@ from .config import (
     EXTERNAL_SECRETS_PLURAL,
     EXTERNAL_SECRETS_VERSION,
     GROUP,
-    SEVERITY_ORDER,
     VERSION,
     ZTS_KIND,
     ZTS_LABEL_NAME,
@@ -290,21 +289,34 @@ def _inject_mapping_to_workload(
     _patch_target(kind=target_kind, namespace=target_namespace, name=target_name, patch_body=patch_body, apps=apps)
 
 
-def _validate_zero_trust_conditions(namespace: str, target_workload: dict, ztc: dict, custom: client.CustomObjectsApi) -> None:
+def _resolve_application_reference(namespace: str, spec: dict) -> tuple[str, str]:
+    application_ref = spec.get("applicationRef", {}) or {}
+    app_name = str(application_ref.get("name", "")).strip()
+    app_namespace = str(application_ref.get("namespace", namespace)).strip() or namespace
+    if app_name:
+        return app_name, app_namespace
+
+    target_workload = spec.get("targetWorkload", {}) or {}
+    fallback_name = str(target_workload.get("name", "")).strip()
+    fallback_namespace = str(target_workload.get("namespace", namespace)).strip() or namespace
+    if fallback_name:
+        return fallback_name, fallback_namespace
+
+    raise ZeroTrustSecretError("applicationRef.name or targetWorkload.name is required")
+
+
+def _validate_zero_trust_conditions(namespace: str, spec: dict, ztc: dict, custom: client.CustomObjectsApi) -> None:
     if not ztc:
         return
 
-    target_name = str(target_workload.get("name", "")).strip()
-    target_namespace = str(target_workload.get("namespace", namespace)).strip() or namespace
+    target_name, target_namespace = _resolve_application_reference(namespace=namespace, spec=spec)
 
     if ztc.get("timeBasedAccess", {}).get("enabled", False):
         raise ZeroTrustSecretError("timeBasedAccess.enabled=true is not implemented in this version")
 
-    require_clean = bool(ztc.get("requireCleanSupplyChain", False))
-    max_allowed = str(ztc.get("maxAllowedVulnerability", "")).strip().upper()
-    require_network_iso = bool(ztc.get("requireNetworkIsolation", False))
+    require_verified = bool(ztc.get("requireVerifiedStatus", False))
 
-    if not (require_clean or max_allowed or require_network_iso):
+    if not require_verified:
         return
 
     try:
@@ -323,31 +335,12 @@ def _validate_zero_trust_conditions(namespace: str, target_workload: dict, ztc: 
         raise
 
     zta_status = zta.get("status", {}) or {}
-    zta_spec = zta.get("spec", {}) or {}
 
-    if require_clean:
-        phase = str(zta_status.get("phase", ""))
-        if phase != "Running":
-            raise ZeroTrustSecretError(
-                f"BlockedBySecurity: requireCleanSupplyChain=true but target ZeroTrustApplication phase is {phase or 'unknown'}"
-            )
-
-    if max_allowed:
-        if max_allowed not in SEVERITY_ORDER:
-            raise ZeroTrustSecretError(f"Invalid zeroTrustConditions.maxAllowedVulnerability: {max_allowed}")
-        app_max = str((zta_spec.get("supplyChain", {}) or {}).get("maxVulnerabilities", "")).upper()
-        if app_max not in SEVERITY_ORDER:
-            raise ZeroTrustSecretError("Target ZeroTrustApplication has invalid supplyChain.maxVulnerabilities")
-        if SEVERITY_ORDER[app_max] > SEVERITY_ORDER[max_allowed]:
-            raise ZeroTrustSecretError(
-                f"BlockedBySecurity: target app vulnerability threshold {app_max} is weaker than required {max_allowed}"
-            )
-
-    if require_network_iso:
-        network_spec = zta_spec.get("networkZeroTrust", {}) or {}
-        egress = network_spec.get("egressAllowedTo", []) or []
-        if not egress:
-            raise ZeroTrustSecretError("BlockedBySecurity: requireNetworkIsolation=true but app egress policy is not defined")
+    trust_level = str(zta_status.get("trustLevel", "Untrusted") or "Untrusted")
+    if trust_level != "Verified":
+        raise ZeroTrustSecretError(
+            f"BlockedBySecurity: requireVerifiedStatus=true but target ZeroTrustApplication trustLevel is {trust_level}"
+        )
 
 
 def _upsert_external_secret(custom: client.CustomObjectsApi, namespace: str, external_secret: dict) -> None:
@@ -449,7 +442,7 @@ def reconcile_zerotrust_secret(spec: dict, name: str, namespace: str, body: dict
         )
 
         ztc = spec.get("zeroTrustConditions", {}) or {}
-        _validate_zero_trust_conditions(namespace=namespace, target_workload=target_workload, ztc=ztc, custom=custom)
+        _validate_zero_trust_conditions(namespace=namespace, spec=spec, ztc=ztc, custom=custom)
 
         owner = _owner_reference(body)
         external_secret, target_secret_name = _build_external_secret(

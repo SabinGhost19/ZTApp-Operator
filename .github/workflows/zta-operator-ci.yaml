@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 env:
@@ -61,6 +61,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: [helm-lint, helm-template]
     if: github.event_name != 'pull_request'
+    outputs:
+      chart_image_tag: ${{ steps.charttag.outputs.value }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -70,6 +72,16 @@ jobs:
         shell: bash
         run: |
           echo "image_repo=${REGISTRY}/${GITHUB_REPOSITORY_OWNER,,}/${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve chart image tag
+        id: charttag
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -108,13 +120,45 @@ jobs:
           echo "Pushed image tags:" >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
 
+  update-chart-values:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.event_name != 'pull_request' && github.actor != 'github-actions[bot]'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Update Helm Chart values with new tag
+        env:
+          TAG: ${{ needs.build-and-push.outputs.chart_image_tag }}
+        run: |
+          sed -i "s/^  tag: .*/  tag: ${TAG}/" helm/zta-operator/values.yaml
+
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add helm/zta-operator/values.yaml
+          git commit -m "chore(helm): update image tags to ${TAG} [skip ci]" || echo "No changes to commit"
+          git pull --rebase origin main
+          git push
+
   package-and-push-chart:
     runs-on: ubuntu-latest
-    needs: [helm-lint, helm-template]
+    needs: [helm-lint, helm-template, update-chart-values]
     if: github.event_name != 'pull_request'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync latest main after values update
+        run: |
+          git fetch origin main
+          git checkout main
+          git pull --rebase origin main
 
       - name: Setup Helm
         uses: azure/setup-helm@v4

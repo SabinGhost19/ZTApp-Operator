@@ -20,6 +20,9 @@ from .supply_chain_attestation import (
     SupplyChainPolicyError,
     apply_sanction,
     check_runtime_drift,
+    get_matching_policy_for_application,
+    requires_provenance_verification,
+    resolve_effective_supply_chain_policy,
     validate_admission_with_attestations,
 )
 from .supply_chain import SupplyChainError, verify_supply_chain
@@ -28,6 +31,12 @@ from . import zerotrust_secret  # noqa: F401
 from . import supply_chain_attestation  # noqa: F401
 
 logger = configure_logging()
+
+
+VULNERABILITY_FAILURE_REASONS = {
+    "trivy-threshold-exceeded",
+    "trivy-fixable-vulnerability-found",
+}
 
 
 def _status_patch(custom: client.CustomObjectsApi, namespace: str, name: str, patch: dict[str, Any]) -> None:
@@ -83,11 +92,6 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
     image = str(desired_spec.get("image", "")).strip()
     replicas = int(desired_spec.get("replicas", 1))
 
-    supply = desired_spec.get("supplyChain", {})
-    require_signature = bool(supply.get("requireSignature", True))
-    allowed_signer = str(supply.get("allowedSigner", "")).strip()
-    max_vuln = str(supply.get("maxVulnerabilities", "Medium")).strip()
-
     network = desired_spec.get("networkZeroTrust", {})
     ingress_allowed_from = network.get("ingressAllowedFrom", []) or []
     egress_allowed_to = network.get("egressAllowedTo", []) or []
@@ -99,9 +103,40 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
     runtime = desired_spec.get("runtimeSecurity", {})
     allowed_paths = runtime.get("allowedPaths", []) or []
     labels = ((body.get("metadata", {}) or {}).get("labels", {}) or {})
+    trust_level = str(current_status.get("trustLevel", "Untrusted") or "Untrusted")
+    vulnerability_violations: list[str] = []
+    vulnerability_details: dict[str, Any] = {}
 
     try:
-        _status_patch(custom, namespace, name, {"phase": "Validating", "lastError": ""})
+        _status_patch(custom, namespace, name, {"phase": "Validating", "lastError": "", "trustLevel": trust_level})
+
+        matched_policy = get_matching_policy_for_application(
+            api_client=api_client,
+            namespace=namespace,
+            app_name=name,
+            labels=labels,
+            app_spec=desired_spec,
+        )
+        effective_policy = resolve_effective_supply_chain_policy(matched_policy, desired_spec)
+        if requires_provenance_verification(matched_policy) and trust_level != "Verified":
+            provenance_status = current_status.get("provenance", {}) or {}
+            pending_message = "Waiting for provenance verification by Provenance-Enforcer"
+            if trust_level == "UntrustedProvenance":
+                pending_message = str(provenance_status.get("reason", "Provenance verification failed"))
+            _status_patch(
+                custom,
+                namespace,
+                name,
+                {
+                    "phase": "Pending",
+                    "lastError": pending_message if trust_level == "UntrustedProvenance" else "",
+                    "trustLevel": trust_level,
+                    "securityState": current_status.get("securityState", "PendingProvenance"),
+                    "provenance": provenance_status,
+                },
+            )
+            adapter.info("Waiting for provenance verification before provisioning", extra={"event": "provenance-pending"})
+            return
 
         compliant, violations, sanction = check_runtime_drift(
             api_client=api_client,
@@ -119,6 +154,7 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
                 name,
                 {
                     "phase": "Degraded",
+                    "trustLevel": trust_level,
                     "securityState": state,
                     "activeViolations": violations,
                     "lastError": "; ".join(violations),
@@ -130,26 +166,45 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
         adapter.info("Starting supply-chain verification", extra={"event": "supply-chain-start"})
         result = verify_supply_chain(
             image=image,
-            require_signature=require_signature,
-            allowed_signer=allowed_signer,
-            max_vulnerabilities=max_vuln,
+            require_signature=bool(effective_policy.get("requireSignature", True)),
+            trusted_identities=list(effective_policy.get("trustedIdentities", [])),
+            max_vulnerabilities=str(effective_policy.get("maxAllowedSeverity", "Medium")),
+            fail_on_fixable=bool(effective_policy.get("failOnFixable", False)),
         )
         if not result.success:
-            _status_patch(
-                custom,
-                namespace,
-                name,
-                {
-                    "phase": "Failed_SupplyChain",
-                    "lastError": result.reason,
-                    "details": result.details,
-                },
-            )
-            adapter.error(
-                "Supply-chain verification failed",
-                extra={"event": "supply-chain-failed"},
-            )
-            raise kopf.PermanentError(f"Supply chain verification failed: {result.reason}")
+            vulnerability_action = str(effective_policy.get("onVulnerabilityFound", "Alert") or "Alert")
+            is_vulnerability_failure = result.reason in VULNERABILITY_FAILURE_REASONS
+            if is_vulnerability_failure and vulnerability_action == "Alert":
+                vulnerability_violations = [f"VulnerabilityPolicyAlert: {result.reason}"]
+                vulnerability_details = result.details
+                adapter.warning(
+                    "Supply-chain vulnerability policy exceeded but action is Alert",
+                    extra={"event": "supply-chain-vulnerability-alert", "reason": result.reason},
+                )
+            else:
+                state = "NonCompliant"
+                active_violations = [result.reason]
+                if is_vulnerability_failure and vulnerability_action == "Kill":
+                    state = apply_sanction(api_client=api_client, namespace=namespace, app_name=name, sanction="Kill")
+                    active_violations = [f"VulnerabilityPolicyKill: {result.reason}"]
+                _status_patch(
+                    custom,
+                    namespace,
+                    name,
+                    {
+                        "phase": "Failed_SupplyChain",
+                        "trustLevel": trust_level,
+                        "securityState": state,
+                        "activeViolations": active_violations,
+                        "lastError": result.reason,
+                        "details": result.details,
+                    },
+                )
+                adapter.error(
+                    "Supply-chain verification failed",
+                    extra={"event": "supply-chain-failed"},
+                )
+                raise kopf.PermanentError(f"Supply chain verification failed: {result.reason}")
 
         attestation_status = current_status if current_status.get("attestations") else validate_admission_with_attestations(
             api_client=api_client,
@@ -183,6 +238,12 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
                 },
             )
 
+        effective_security_state = attestation_status.get("securityState", "Compliant")
+        effective_violations = list(attestation_status.get("activeViolations", []))
+        if vulnerability_violations:
+            effective_security_state = "Alert"
+            effective_violations.extend(vulnerability_violations)
+
         _status_patch(
             custom,
             namespace,
@@ -190,11 +251,14 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
             {
                 "phase": "Provisioning",
                 "lastError": "",
-                "securityState": attestation_status.get("securityState", "Compliant"),
+                "trustLevel": trust_level,
+                "securityState": effective_security_state,
                 "attestations": attestations,
                 "policyMatchDebug": policy_match_debug,
-                "activeViolations": attestation_status.get("activeViolations", []),
+                "activeViolations": effective_violations,
                 "lastVerified": attestation_status.get("lastVerified"),
+                "provenance": current_status.get("provenance", {}),
+                "details": vulnerability_details,
             },
         )
 
@@ -236,11 +300,14 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
             {
                 "phase": "Running",
                 "lastError": "",
-                "securityState": attestation_status.get("securityState", "Compliant"),
+                "trustLevel": trust_level,
+                "securityState": effective_security_state,
                 "attestations": attestations,
                 "policyMatchDebug": policy_match_debug,
-                "activeViolations": attestation_status.get("activeViolations", []),
+                "activeViolations": effective_violations,
                 "lastVerified": attestation_status.get("lastVerified"),
+                "provenance": current_status.get("provenance", {}),
+                "details": vulnerability_details,
             },
         )
         adapter.info("Reconciliation completed", extra={"event": "reconcile-success", "phase": "Running"})
@@ -252,6 +319,7 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
             name,
             {
                 "phase": "Failed_SupplyChain",
+                "trustLevel": trust_level,
                 "securityState": "NonCompliant",
                 "activeViolations": [str(exc)],
                 "lastError": str(exc),
@@ -261,7 +329,7 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
         raise kopf.PermanentError(str(exc)) from exc
 
     except (SupplyChainError, TalonConfigError, ApiException, ValueError) as exc:
-        _status_patch(custom, namespace, name, {"phase": "Degraded", "lastError": str(exc)})
+        _status_patch(custom, namespace, name, {"phase": "Degraded", "lastError": str(exc), "trustLevel": trust_level})
         adapter.exception("Reconciliation failed", extra={"event": "reconcile-error"})
         raise kopf.TemporaryError(str(exc), delay=30) from exc
 

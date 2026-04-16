@@ -262,31 +262,45 @@ def _validate_manifest_hash(
     return violations, computed_hash
 
 
-def _labels_match(selector_labels: dict[str, Any], candidate_labels: dict[str, str]) -> bool:
-    if not selector_labels:
-        return True
-
-    for key, value in selector_labels.items():
-        if candidate_labels.get(str(key)) != str(value):
-            return False
-    return True
+def _security_policy_ref_name(spec: dict[str, Any] | None) -> str:
+    if not spec:
+        return ""
+    policy_ref = (spec.get("securityPolicyRef", {}) or {})
+    return str(policy_ref.get("name", "")).strip()
 
 
-def _policy_targets_zta(policy: dict[str, Any], namespace: str, app_name: str, labels: dict[str, str]) -> bool:
-    target = ((policy.get("spec", {}) or {}).get("target", {}) or {})
+def _get_policy_by_reference(
+    custom: client.CustomObjectsApi,
+    spec: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    policy_name = _security_policy_ref_name(spec)
+    if not policy_name:
+        return None
+    try:
+        return custom.get_cluster_custom_object(
+            group=GROUP,
+            version=VERSION,
+            plural=SCA_PLURAL,
+            name=policy_name,
+        )
+    except ApiException as exc:
+        if exc.status == 404:
+            raise SupplyChainPolicyError(f"Referenced SupplyChainAttestation not found: {policy_name}") from exc
+        raise
 
-    target_name = str(target.get("ztaName", "")).strip()
-    target_namespace = str(target.get("ztaNamespace", "")).strip()
-    selector_labels = (((target.get("selector", {}) or {}).get("matchLabels", {}) or {}))
 
-    if not target_name and not selector_labels:
+def _policy_targets_zta(
+    policy: dict[str, Any],
+    namespace: str,
+    app_name: str,
+    labels: dict[str, str],
+    app_spec: dict[str, Any] | None = None,
+) -> bool:
+    referenced_name = _security_policy_ref_name(app_spec)
+    if not referenced_name:
         return False
-
-    name_ok = (not target_name) or (target_name == app_name)
-    namespace_ok = (not target_namespace) or (target_namespace == namespace)
-    selector_ok = _labels_match(selector_labels, labels)
-
-    return name_ok and namespace_ok and selector_ok
+    policy_name = str((policy.get("metadata", {}) or {}).get("name", "")).strip()
+    return policy_name == referenced_name
 
 
 def _get_matching_policy(
@@ -294,20 +308,14 @@ def _get_matching_policy(
     namespace: str,
     app_name: str,
     labels: dict[str, str],
+    app_spec: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    items = (
-        custom.list_cluster_custom_object(group=GROUP, version=VERSION, plural=SCA_PLURAL).get("items", []) or []
-    )
-
-    matched = [item for item in items if _policy_targets_zta(item, namespace=namespace, app_name=app_name, labels=labels)]
-    if not matched:
+    referenced_policy = _get_policy_by_reference(custom, app_spec)
+    if referenced_policy is not None:
+        return referenced_policy
+    if _security_policy_ref_name(app_spec):
         return None
-
-    if len(matched) > 1:
-        names = ", ".join(sorted(str((m.get("metadata", {}) or {}).get("name", "")) for m in matched))
-        raise SupplyChainPolicyError(f"Multiple SupplyChainAttestation resources target the same ZTA: {names}")
-
-    return matched[0]
+    raise SupplyChainPolicyError("ZeroTrustApplication.spec.securityPolicyRef.name is required")
 
 
 def _explain_policy_target_match(
@@ -315,35 +323,25 @@ def _explain_policy_target_match(
     namespace: str,
     app_name: str,
     labels: dict[str, str],
+    app_spec: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     meta = policy.get("metadata", {}) or {}
-    spec = policy.get("spec", {}) or {}
-    target = spec.get("target", {}) or {}
+    policy_name = str(meta.get("name", "")).strip()
+    referenced_name = _security_policy_ref_name(app_spec)
 
-    target_name = str(target.get("ztaName", "")).strip()
-    target_namespace = str(target.get("ztaNamespace", "")).strip()
-    selector_labels = (((target.get("selector", {}) or {}).get("matchLabels", {}) or {}))
+    if not referenced_name:
+        return {
+            "policyName": policy_name,
+            "matchMode": "securityPolicyRef",
+            "matched": False,
+            "reasons": ["securityPolicyRef is missing on ZeroTrustApplication"],
+        }
 
-    reasons: list[str] = []
-
-    if not target_name and not selector_labels:
-        reasons.append("policy target is empty (set target.ztaName and/or target.selector.matchLabels)")
-
-    if target_name and target_name != app_name:
-        reasons.append(f"target.ztaName mismatch: expected '{target_name}', got '{app_name}'")
-
-    if target_namespace and target_namespace != namespace:
-        reasons.append(f"target.ztaNamespace mismatch: expected '{target_namespace}', got '{namespace}'")
-
-    for key, expected in selector_labels.items():
-        actual = labels.get(str(key))
-        if str(expected) != str(actual):
-            reasons.append(f"selector label mismatch for '{key}': expected '{expected}', got '{actual}'")
-
-    matched = len(reasons) == 0 and bool(target_name or selector_labels)
+    matched = policy_name == referenced_name
+    reasons = [] if matched else [f"securityPolicyRef mismatch: expected '{referenced_name}', got '{policy_name}'"]
     return {
-        "policyName": str(meta.get("name", "")),
-        "target": target,
+        "policyName": policy_name,
+        "matchMode": "securityPolicyRef",
         "matched": matched,
         "reasons": reasons,
     }
@@ -354,16 +352,63 @@ def _collect_policy_match_diagnostics(
     namespace: str,
     app_name: str,
     labels: dict[str, str],
+    app_spec: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     items = custom.list_cluster_custom_object(group=GROUP, version=VERSION, plural=SCA_PLURAL).get("items", []) or []
-    evaluations = [_explain_policy_target_match(item, namespace=namespace, app_name=app_name, labels=labels) for item in items]
+    evaluations = [
+        _explain_policy_target_match(item, namespace=namespace, app_name=app_name, labels=labels, app_spec=app_spec)
+        for item in items
+    ]
     return {
         "namespace": namespace,
         "appName": app_name,
         "labels": labels,
+        "securityPolicyRef": _security_policy_ref_name(app_spec),
         "candidateCount": len(evaluations),
         "candidates": evaluations,
     }
+
+
+def get_matching_policy_for_application(
+    api_client: client.ApiClient,
+    namespace: str,
+    app_name: str,
+    labels: dict[str, str],
+    app_spec: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    custom = client.CustomObjectsApi(api_client)
+    return _get_matching_policy(custom, namespace=namespace, app_name=app_name, labels=labels, app_spec=app_spec)
+
+
+def resolve_effective_supply_chain_policy(policy: dict[str, Any] | None, app_spec: dict[str, Any]) -> dict[str, Any]:
+    if not policy:
+        raise SupplyChainPolicyError("ZeroTrustApplication.spec.securityPolicyRef must reference an existing SupplyChainAttestation")
+
+    source_validation = ((policy or {}).get("spec", {}) or {}).get("sourceValidation", {}) or {}
+    vulnerability_policy = ((policy or {}).get("spec", {}) or {}).get("vulnerabilityPolicy", {}) or {}
+    runtime_enforcement = ((policy or {}).get("spec", {}) or {}).get("runtimeEnforcement", {}) or {}
+
+    trusted_issuers = [
+        str(item).strip()
+        for item in (source_validation.get("trustedIssuers", []) or [])
+        if str(item).strip()
+    ]
+    max_allowed = str(vulnerability_policy.get("maxAllowedSeverity", "")).strip() or "Medium"
+
+    return {
+        "requireSignature": bool(source_validation.get("enforceCosign", True)),
+        "trustedIdentities": trusted_issuers,
+        "maxAllowedSeverity": max_allowed,
+        "failOnFixable": bool(vulnerability_policy.get("failOnFixable", False)),
+        "onVulnerabilityFound": str(runtime_enforcement.get("onVulnerabilityFound", "Alert") or "Alert"),
+    }
+
+
+def requires_provenance_verification(policy: dict[str, Any] | None) -> bool:
+    if not policy:
+        return False
+    provenance = ((policy.get("spec", {}) or {}).get("provenance", {}) or {})
+    return bool(provenance.get("requireVoucher", False))
 
 
 def _status_patch(custom: client.CustomObjectsApi, namespace: str, name: str, patch: dict[str, Any]) -> None:
@@ -422,9 +467,15 @@ def validate_admission_with_attestations(
 ) -> dict[str, Any]:
     custom = client.CustomObjectsApi(api_client)
 
-    matched_policy = _get_matching_policy(custom, namespace=namespace, app_name=app_name, labels=labels)
+    matched_policy = _get_matching_policy(custom, namespace=namespace, app_name=app_name, labels=labels, app_spec=spec)
     if not matched_policy:
-        diagnostics = _collect_policy_match_diagnostics(custom, namespace=namespace, app_name=app_name, labels=labels)
+        diagnostics = _collect_policy_match_diagnostics(
+            custom,
+            namespace=namespace,
+            app_name=app_name,
+            labels=labels,
+            app_spec=spec,
+        )
         logger.info(
             "No matching SupplyChainAttestation found for application",
             extra={
@@ -570,7 +621,13 @@ def check_runtime_drift(
     labels: dict[str, str],
 ) -> tuple[bool, list[str], str]:
     custom = client.CustomObjectsApi(api_client)
-    policy = _get_matching_policy(custom, namespace=namespace, app_name=app_name, labels=labels)
+    policy = _get_matching_policy(
+        custom,
+        namespace=namespace,
+        app_name=app_name,
+        labels=labels,
+        app_spec=current_spec,
+    )
     if not policy:
         return True, [], "Alert"
 
@@ -617,7 +674,7 @@ def reevaluate_policy_targets(api_client: client.ApiClient, policy: dict[str, An
         spec_app = item.get("spec", {}) or {}
         attestations = status.get("attestations", {}) or {}
 
-        if not _policy_targets_zta(policy, namespace=app_ns, app_name=app_name, labels=app_labels):
+        if not _policy_targets_zta(policy, namespace=app_ns, app_name=app_name, labels=app_labels, app_spec=spec_app):
             continue
 
         violations: list[str] = []

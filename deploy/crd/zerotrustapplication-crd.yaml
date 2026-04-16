@@ -23,7 +23,6 @@ spec:
               type: object
               required:
                 - image
-                - supplyChain
               properties:
                 image:
                   type: string
@@ -31,21 +30,12 @@ spec:
                   type: integer
                   minimum: 1
                   default: 1
-                supplyChain:
+                securityPolicyRef:
                   type: object
-                  required:
-                    - requireSignature
-                    - allowedSigner
-                    - maxVulnerabilities
+                  required: [name]
                   properties:
-                    requireSignature:
-                      type: boolean
-                      default: true
-                    allowedSigner:
+                    name:
                       type: string
-                    maxVulnerabilities:
-                      type: string
-                      enum: [Low, Medium, High, Critical]
                 networkZeroTrust:
                   type: object
                   properties:
@@ -95,6 +85,9 @@ spec:
                   type: string
                 lastError:
                   type: string
+                trustLevel:
+                  type: string
+                  enum: [Untrusted, Verified, UntrustedProvenance]
                 securityState:
                   type: string
                 lastVerified:
@@ -103,6 +96,8 @@ spec:
                   type: array
                   items:
                     type: string
+                provenance:
+                  x-kubernetes-preserve-unknown-fields: true
                 attestations:
                   x-kubernetes-preserve-unknown-fields: true
                 details:
@@ -113,6 +108,9 @@ spec:
         - name: Phase
           type: string
           jsonPath: .status.phase
+        - name: Trust
+          type: string
+          jsonPath: .status.trustLevel
         - name: Image
           type: string
           jsonPath: .spec.image

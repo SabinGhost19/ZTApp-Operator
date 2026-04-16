@@ -22,20 +22,6 @@ spec:
             spec:
               type: object
               properties:
-                target:
-                  type: object
-                  properties:
-                    ztaName:
-                      type: string
-                    ztaNamespace:
-                      type: string
-                    selector:
-                      type: object
-                      properties:
-                        matchLabels:
-                          type: object
-                          additionalProperties:
-                            type: string
                 sourceValidation:
                   type: object
                   properties:
@@ -46,6 +32,32 @@ spec:
                       type: array
                       items:
                         type: string
+                provenance:
+                  type: object
+                  properties:
+                    requireVoucher:
+                      type: boolean
+                      default: false
+                    enforceHmacChain:
+                      type: boolean
+                      default: true
+                    minSlsaLevel:
+                      type: integer
+                      minimum: 0
+                      default: 0
+                    trustedRepositories:
+                      type: array
+                      items:
+                        type: string
+                vulnerabilityPolicy:
+                  type: object
+                  properties:
+                    maxAllowedSeverity:
+                      type: string
+                      enum: [Low, Medium, High, Critical]
+                    failOnFixable:
+                      type: boolean
+                      default: false
                 sbomPolicy:
                   type: object
                   properties:
@@ -90,8 +102,10 @@ spec:
                       type: string
                       enum: [Isolate, Kill, Alert]
                       default: Isolate
-              required:
-                - target
+                    onVulnerabilityFound:
+                      type: string
+                      enum: [Kill, Alert]
+                      default: Alert
       additionalPrinterColumns:
         - name: DriftAction
           type: string

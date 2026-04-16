@@ -3,13 +3,19 @@ kind: SupplyChainAttestation
 metadata:
   name: demo-app-security-policy
 spec:
-  target:
-    ztaName: demo-vulnerable-fastapi
-    ztaNamespace: default
   sourceValidation:
     enforceCosign: true
     trustedIssuers:
       - https://github.com/SabinGhost19/vulfastapi/.github/workflows/ci-cd.yaml@refs/heads/main
+  provenance:
+    requireVoucher: true
+    enforceHmacChain: true
+    minSlsaLevel: 3
+    trustedRepositories:
+      - SabinGhost19/vulfastapi
+  vulnerabilityPolicy:
+    maxAllowedSeverity: High
+    failOnFixable: true
   sbomPolicy:
     enforceSBOM: true
     forbiddenPackages:
@@ -24,3 +30,4 @@ spec:
   runtimeEnforcement:
     enabled: true
     onPolicyDrift: Isolate
+    onVulnerabilityFound: Alert

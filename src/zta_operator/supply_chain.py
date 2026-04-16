@@ -69,7 +69,16 @@ def _max_found_severity(payload: dict[str, Any]) -> str | None:
     return max_name
 
 
-def verify_trivy_threshold(image: str, max_vulnerabilities: str) -> VerificationResult:
+def _has_fixable_vulnerabilities(payload: dict[str, Any]) -> bool:
+    for section in payload.get("Results", []):
+        for vuln in section.get("Vulnerabilities", []) or []:
+            fixed_version = str(vuln.get("FixedVersion", "")).strip()
+            if fixed_version:
+                return True
+    return False
+
+
+def verify_trivy_threshold(image: str, max_vulnerabilities: str, fail_on_fixable: bool = False) -> VerificationResult:
     threshold = str(max_vulnerabilities).upper()
     if threshold not in SEVERITY_ORDER:
         raise SupplyChainError(f"Invalid maxVulnerabilities: {max_vulnerabilities}")
@@ -89,6 +98,13 @@ def verify_trivy_threshold(image: str, max_vulnerabilities: str) -> Verification
         raise SupplyChainError("Trivy output is not valid JSON.") from exc
 
     highest = _max_found_severity(payload)
+    if fail_on_fixable and _has_fixable_vulnerabilities(payload):
+        return VerificationResult(
+            success=False,
+            reason="trivy-fixable-vulnerability-found",
+            details={"threshold": threshold, "failOnFixable": True},
+        )
+
     if highest is None:
         return VerificationResult(success=True, reason="ok", details={"highest": "NONE", "threshold": threshold})
 
@@ -99,17 +115,38 @@ def verify_trivy_threshold(image: str, max_vulnerabilities: str) -> Verification
             details={"highest": highest, "threshold": threshold},
         )
 
-    return VerificationResult(success=True, reason="ok", details={"highest": highest, "threshold": threshold})
+    return VerificationResult(
+        success=True,
+        reason="ok",
+        details={"highest": highest, "threshold": threshold, "failOnFixable": fail_on_fixable},
+    )
 
 
-def verify_supply_chain(image: str, require_signature: bool, allowed_signer: str, max_vulnerabilities: str) -> VerificationResult:
+def verify_supply_chain(
+    image: str,
+    require_signature: bool,
+    trusted_identities: list[str],
+    max_vulnerabilities: str,
+    fail_on_fixable: bool = False,
+) -> VerificationResult:
     validate_image_reference(image)
 
     if require_signature:
-        if not allowed_signer:
-            raise SupplyChainError("allowedSigner is required when requireSignature is true.")
-        cosign_result = verify_cosign_keyless(image=image, allowed_signer=allowed_signer)
-        if not cosign_result.success:
-            return cosign_result
+        identities = [identity for identity in trusted_identities if str(identity).strip()]
+        if not identities:
+            raise SupplyChainError("At least one trusted identity is required when requireSignature is true.")
+        last_result: VerificationResult | None = None
+        for identity in identities:
+            cosign_result = verify_cosign_keyless(image=image, allowed_signer=str(identity).strip())
+            if cosign_result.success:
+                last_result = cosign_result
+                break
+            last_result = cosign_result
+        if not last_result or not last_result.success:
+            return last_result or VerificationResult(success=False, reason="cosign-verification-failed", details={})
 
-    return verify_trivy_threshold(image=image, max_vulnerabilities=max_vulnerabilities)
+    return verify_trivy_threshold(
+        image=image,
+        max_vulnerabilities=max_vulnerabilities,
+        fail_on_fixable=fail_on_fixable,
+    )

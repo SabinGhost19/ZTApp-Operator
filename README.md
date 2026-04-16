@@ -1,14 +1,14 @@
 # ZTA Operator (Kopf/Python)
 
 Operator custom pentru `ZeroTrustApplication` cu:
-- Supply-chain validation (Cosign keyless + Trivy)
+- Supply-chain validation condus de `SupplyChainAttestation` (Cosign keyless + Trivy)
 - Workload hardening
 - Istio AuthorizationPolicy + WasmPlugin
 - NetworkPolicy
 - Falco custom rules
 - Falco Talon integration prin patch pe ConfigMap (`falco-talon-rules` / `rules.yaml`)
-- ZeroTrustSecret lifecycle (Vault + ESO delegation + mutating injection + rolling restart)
-- SupplyChainAttestation global policy (SBOM + policy binding + continuous compliance)
+- ZeroTrustSecret lifecycle cu `applicationRef` si `requireVerifiedStatus` (Vault + ESO delegation + mutating injection + rolling restart)
+- SupplyChainAttestation ca policy centrala (SBOM + provenance + vulnerability policy + continuous compliance)
 
 ## Structură
 
@@ -27,7 +27,12 @@ Operator custom pentru `ZeroTrustApplication` cu:
 
 - Registry permis: doar `ghcr.io`
 - Tag `latest` interzis
-- `allowedSigner`: un singur string (workflow oficial)
+- `ZeroTrustApplication.spec.securityPolicyRef.name` este referinta explicita catre politica
+- `ZeroTrustSecret.spec.applicationRef.name` este referinta explicita catre aplicatie pentru trust gating
+- `SupplyChainAttestation.spec.sourceValidation.trustedIssuers` este sursa de adevar pentru identitatile Cosign
+- `SupplyChainAttestation.spec.vulnerabilityPolicy` este sursa de adevar pentru pragurile Trivy
+- `runtimeEnforcement.onVulnerabilityFound` decide intre `Alert` si `Kill` cand scanarea Trivy gaseste probleme peste prag
+- `ZeroTrustApplication` nu mai expune campuri locale de supply-chain; politica este definita exclusiv in `SupplyChainAttestation`
 - `WasmPlugin`: `extensions.istio.io/v1alpha1`
 - Talon fără CRD: integrare exclusiv ConfigMap patch
 
