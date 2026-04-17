@@ -1,3 +1,10 @@
+## [1.3.1](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.3.0...v1.3.1) (2026-04-17)
+
+
+### Bug Fixes
+
+* **zta:** reconcile on trust level updates and allow event emission ([a630a50](https://github.com/SabinGhost19/ZTApp-Operator/commit/a630a50ff3823dfdacfd56052d030c4a4669ff99))
+
 # [1.3.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.2.0...v1.3.0) (2026-04-16)
 
 
