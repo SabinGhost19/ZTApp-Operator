@@ -279,17 +279,38 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
         objects = [
             build_deployment(name=name, namespace=namespace, image=image, replicas=replicas, allowed_paths=allowed_paths, owner=owner),
             build_service(name=name, namespace=namespace, owner=owner),
-            build_authorization_policy(name=name, namespace=namespace, ingress_allowed_from=ingress_allowed_from, owner=owner),
-            build_network_policy(
-                name=name,
-                namespace=namespace,
-                ingress_allowed_from=ingress_allowed_from,
-                egress_allowed_to=egress_allowed_to,
-                owner=owner,
-            ),
-            build_wasm_plugin(name=name, namespace=namespace, mode=waf_mode, app_profile=app_profile, owner=owner),
-            build_falco_rule_configmap(name=name, namespace=namespace, image=image, allowed_paths=allowed_paths, owner=owner),
         ]
+
+        if ingress_allowed_from or egress_allowed_to:
+            objects.append(
+                build_network_policy(
+                    name=name,
+                    namespace=namespace,
+                    ingress_allowed_from=ingress_allowed_from,
+                    egress_allowed_to=egress_allowed_to,
+                    owner=owner,
+                )
+            )
+
+        # Istio resources are opt-in: when wafConfig is absent, skip service-mesh provisioning.
+        if waf:
+            objects.append(
+                build_authorization_policy(
+                    name=name,
+                    namespace=namespace,
+                    ingress_allowed_from=ingress_allowed_from,
+                    owner=owner,
+                )
+            )
+            objects.append(
+                build_wasm_plugin(name=name, namespace=namespace, mode=waf_mode, app_profile=app_profile, owner=owner)
+            )
+
+        # Falco/Talon resources are opt-in: when runtimeSecurity is absent, skip runtime enforcement provisioning.
+        if runtime:
+            objects.append(
+                build_falco_rule_configmap(name=name, namespace=namespace, image=image, allowed_paths=allowed_paths, owner=owner)
+            )
 
         for obj in objects:
             apply_object(api_client=api_client, obj=obj)
@@ -302,9 +323,10 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
                 },
             )
 
-        falco_rule_name = _falco_rule_name(namespace=namespace, name=name)
-        upsert_talon_rule(core=core, app_namespace=namespace, app_name=name, falco_rule_name=falco_rule_name)
-        adapter.info("Patched Talon rules ConfigMap", extra={"event": "talon-configmap-upsert"})
+        if runtime:
+            falco_rule_name = _falco_rule_name(namespace=namespace, name=name)
+            upsert_talon_rule(core=core, app_namespace=namespace, app_name=name, falco_rule_name=falco_rule_name)
+            adapter.info("Patched Talon rules ConfigMap", extra={"event": "talon-configmap-upsert"})
 
         _status_patch(
             custom,
