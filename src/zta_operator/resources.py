@@ -1,7 +1,20 @@
+from copy import deepcopy
+
 from kubernetes import client
 from kubernetes.client.exceptions import ApiException
 
 from .config import FALCO_RULE_LABEL_KEY, FALCO_RULE_LABEL_VALUE, WASM_PLUGIN_API_VERSION, WASM_PLUGIN_KIND
+
+
+CUSTOM_OBJECT_PLURALS = {
+    ("security.istio.io", "AuthorizationPolicy"): "authorizationpolicies",
+    ("extensions.istio.io", "WasmPlugin"): "wasmplugins",
+}
+
+CUSTOM_OBJECT_VERSION_FALLBACKS = {
+    ("security.istio.io", "AuthorizationPolicy"): ("v1", "v1beta1"),
+    ("extensions.istio.io", "WasmPlugin"): (WASM_PLUGIN_API_VERSION.split("/", 1)[1],),
+}
 
 
 def _metadata(name: str, namespace: str, owner: dict) -> dict:
@@ -184,6 +197,26 @@ def build_falco_rule_configmap(name: str, namespace: str, image: str, allowed_pa
     }
 
 
+def _iter_custom_object_candidates(obj: dict) -> list[tuple[str, str, str, dict]]:
+    group, _, version = obj["apiVersion"].partition("/")
+    kind = obj["kind"]
+    plural = CUSTOM_OBJECT_PLURALS.get((group, kind))
+    if plural is None:
+        raise ValueError(f"Unsupported object kind for apply: {obj['apiVersion']} {kind}")
+
+    versions = []
+    for candidate in (version, *CUSTOM_OBJECT_VERSION_FALLBACKS.get((group, kind), ())):
+        if candidate and candidate not in versions:
+            versions.append(candidate)
+
+    candidates = []
+    for candidate_version in versions:
+        candidate_obj = deepcopy(obj)
+        candidate_obj["apiVersion"] = f"{group}/{candidate_version}"
+        candidates.append((group, candidate_version, plural, candidate_obj))
+    return candidates
+
+
 def apply_object(api_client: client.ApiClient, obj: dict) -> None:
     group, _, version = obj["apiVersion"].partition("/")
     if not version:
@@ -195,7 +228,6 @@ def apply_object(api_client: client.ApiClient, obj: dict) -> None:
     name = metadata["name"]
     namespace = metadata.get("namespace")
 
-    co = client.CustomObjectsApi(api_client)
     core = client.CoreV1Api(api_client)
     apps = client.AppsV1Api(api_client)
     networking = client.NetworkingV1Api(api_client)
@@ -218,16 +250,49 @@ def apply_object(api_client: client.ApiClient, obj: dict) -> None:
             networking.patch_namespaced_network_policy(name=name, namespace=namespace, body=obj)
             return
 
-        plural_map = {
-            ("security.istio.io", "AuthorizationPolicy"): "authorizationpolicies",
-            ("extensions.istio.io", "WasmPlugin"): "wasmplugins",
-        }
-        plural = plural_map.get((group, kind))
-        if plural is None:
-            raise ValueError(f"Unsupported object kind for apply: {obj['apiVersion']} {kind}")
+        last_exc = None
+        for custom_group, custom_version, plural, candidate_obj in _iter_custom_object_candidates(obj):
+            co = client.CustomObjectsApi(api_client)
+            try:
+                co.get_namespaced_custom_object(
+                    group=custom_group,
+                    version=custom_version,
+                    namespace=namespace,
+                    plural=plural,
+                    name=name,
+                )
+                co.patch_namespaced_custom_object(
+                    group=custom_group,
+                    version=custom_version,
+                    namespace=namespace,
+                    plural=plural,
+                    name=name,
+                    body=candidate_obj,
+                )
+                return
+            except ApiException as exc:
+                last_exc = exc
+                if exc.status != 404:
+                    raise
 
-        co.get_namespaced_custom_object(group=group, version=version, namespace=namespace, plural=plural, name=name)
-        co.patch_namespaced_custom_object(group=group, version=version, namespace=namespace, plural=plural, name=name, body=obj)
+                try:
+                    co.create_namespaced_custom_object(
+                        group=custom_group,
+                        version=custom_version,
+                        namespace=namespace,
+                        plural=plural,
+                        body=candidate_obj,
+                    )
+                    return
+                except ApiException as create_exc:
+                    last_exc = create_exc
+                    if create_exc.status == 404:
+                        continue
+                    raise
+
+        if last_exc is not None:
+            raise last_exc
+        raise ValueError(f"Unsupported object kind for apply: {obj['apiVersion']} {kind}")
     except ApiException as exc:
         if exc.status != 404:
             raise
@@ -244,9 +309,24 @@ def apply_object(api_client: client.ApiClient, obj: dict) -> None:
             networking.create_namespaced_network_policy(namespace=namespace, body=obj)
             return
 
-        plural_map = {
-            ("security.istio.io", "AuthorizationPolicy"): "authorizationpolicies",
-            ("extensions.istio.io", "WasmPlugin"): "wasmplugins",
-        }
-        plural = plural_map[(group, kind)]
-        co.create_namespaced_custom_object(group=group, version=version, namespace=namespace, plural=plural, body=obj)
+        last_exc = None
+        for custom_group, custom_version, plural, candidate_obj in _iter_custom_object_candidates(obj):
+            co = client.CustomObjectsApi(api_client)
+            try:
+                co.create_namespaced_custom_object(
+                    group=custom_group,
+                    version=custom_version,
+                    namespace=namespace,
+                    plural=plural,
+                    body=candidate_obj,
+                )
+                return
+            except ApiException as create_exc:
+                last_exc = create_exc
+                if create_exc.status == 404:
+                    continue
+                raise
+
+        if last_exc is not None:
+            raise last_exc
+        raise ValueError(f"Unsupported object kind for apply: {obj['apiVersion']} {kind}")
