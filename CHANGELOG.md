@@ -1,3 +1,10 @@
+## [1.3.5](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.3.4...v1.3.5) (2026-04-17)
+
+
+### Bug Fixes
+
+* **zta-runtime:** stop status reconcile loops and disable readonly rootfs when runtimeSecurity is absent ([cab91aa](https://github.com/SabinGhost19/ZTApp-Operator/commit/cab91aae246ac4a028c6e242ab3e955c846ae7f8))
+
 ## [1.3.4](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.3.3...v1.3.4) (2026-04-17)
 
 
