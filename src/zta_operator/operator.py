@@ -87,7 +87,7 @@ def startup_fn(**_: Any) -> None:
 
 
 @kopf.on.create(GROUP, VERSION, PLURAL)
-@kopf.on.update(GROUP, VERSION, PLURAL)
+@kopf.on.field(GROUP, VERSION, PLURAL, field="spec")
 @kopf.on.field(GROUP, VERSION, PLURAL, field="status.trustLevel")
 def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **_: Any) -> None:
     reconcile_id = new_reconcile_id()
@@ -277,7 +277,15 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
 
         owner = _owner_reference(body)
         objects = [
-            build_deployment(name=name, namespace=namespace, image=image, replicas=replicas, allowed_paths=allowed_paths, owner=owner),
+            build_deployment(
+                name=name,
+                namespace=namespace,
+                image=image,
+                replicas=replicas,
+                allowed_paths=allowed_paths,
+                owner=owner,
+                runtime_security_enabled=bool(runtime),
+            ),
             build_service(name=name, namespace=namespace, owner=owner),
         ]
 

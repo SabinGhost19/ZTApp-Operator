@@ -26,7 +26,15 @@ def _metadata(name: str, namespace: str, owner: dict) -> dict:
     }
 
 
-def build_deployment(name: str, namespace: str, image: str, replicas: int, allowed_paths: list[str], owner: dict) -> dict:
+def build_deployment(
+    name: str,
+    namespace: str,
+    image: str,
+    replicas: int,
+    allowed_paths: list[str],
+    owner: dict,
+    runtime_security_enabled: bool,
+) -> dict:
     volume_mounts = [{"name": f"writable-{i}", "mountPath": path} for i, path in enumerate(allowed_paths)]
     volumes = [{"name": f"writable-{i}", "emptyDir": {}} for i, _ in enumerate(allowed_paths)]
 
@@ -45,7 +53,7 @@ def build_deployment(name: str, namespace: str, image: str, replicas: int, allow
                             "name": name,
                             "image": image,
                             "securityContext": {
-                                "readOnlyRootFilesystem": True,
+                                "readOnlyRootFilesystem": runtime_security_enabled,
                                 "allowPrivilegeEscalation": False,
                             },
                             "volumeMounts": volume_mounts,
