@@ -1,3 +1,10 @@
+## [1.3.3](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.3.2...v1.3.3) (2026-04-17)
+
+
+### Bug Fixes
+
+* **zta:** duplicated tracing logs ([2d8ed77](https://github.com/SabinGhost19/ZTApp-Operator/commit/2d8ed77c8a3a96d1449abc0cb1ddb24a3e2f2e25))
+
 ## [1.3.2](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.3.1...v1.3.2) (2026-04-17)
 
 
