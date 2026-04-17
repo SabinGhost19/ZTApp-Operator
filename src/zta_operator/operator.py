@@ -39,6 +39,18 @@ VULNERABILITY_FAILURE_REASONS = {
 }
 
 
+def _unique_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        normalized = str(value or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(normalized)
+    return unique
+
+
 def _status_patch(custom: client.CustomObjectsApi, namespace: str, name: str, patch: dict[str, Any]) -> None:
     custom.patch_namespaced_custom_object_status(
         group=GROUP,
@@ -157,8 +169,8 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
                     "phase": "Degraded",
                     "trustLevel": trust_level,
                     "securityState": state,
-                    "activeViolations": violations,
-                    "lastError": "; ".join(violations),
+                    "activeViolations": _unique_strings(violations),
+                    "lastError": "; ".join(_unique_strings(violations)),
                 },
             )
             adapter.warning("Runtime policy drift detected and sanctioned", extra={"event": "runtime-drift-enforced"})
@@ -196,7 +208,7 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
                         "phase": "Failed_SupplyChain",
                         "trustLevel": trust_level,
                         "securityState": state,
-                        "activeViolations": active_violations,
+                        "activeViolations": _unique_strings(active_violations),
                         "lastError": result.reason,
                         "details": result.details,
                     },
@@ -240,10 +252,10 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
             )
 
         effective_security_state = attestation_status.get("securityState", "Compliant")
-        effective_violations = list(attestation_status.get("activeViolations", []))
+        effective_violations = _unique_strings(list(attestation_status.get("activeViolations", [])))
         if vulnerability_violations:
             effective_security_state = "Alert"
-            effective_violations.extend(vulnerability_violations)
+            effective_violations = _unique_strings(effective_violations + vulnerability_violations)
 
         _status_patch(
             custom,
@@ -322,7 +334,7 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
                 "phase": "Failed_SupplyChain",
                 "trustLevel": trust_level,
                 "securityState": "NonCompliant",
-                "activeViolations": [str(exc)],
+                "activeViolations": _unique_strings([str(exc)]),
                 "lastError": str(exc),
             },
         )
