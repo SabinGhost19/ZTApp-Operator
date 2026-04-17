@@ -1,0 +1,16 @@
+README.md
+pyproject.toml
+src/zta_operator/__init__.py
+src/zta_operator/config.py
+src/zta_operator/logging_utils.py
+src/zta_operator/operator.py
+src/zta_operator/resources.py
+src/zta_operator/supply_chain.py
+src/zta_operator/supply_chain_attestation.py
+src/zta_operator/talon.py
+src/zta_operator/zerotrust_secret.py
+src/zta_operator.egg-info/PKG-INFO
+src/zta_operator.egg-info/SOURCES.txt
+src/zta_operator.egg-info/dependency_links.txt
+src/zta_operator.egg-info/requires.txt
+src/zta_operator.egg-info/top_level.txt

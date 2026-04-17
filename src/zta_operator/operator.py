@@ -76,6 +76,7 @@ def startup_fn(**_: Any) -> None:
 
 @kopf.on.create(GROUP, VERSION, PLURAL)
 @kopf.on.update(GROUP, VERSION, PLURAL)
+@kopf.on.field(GROUP, VERSION, PLURAL, field="status.trustLevel")
 def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **_: Any) -> None:
     reconcile_id = new_reconcile_id()
     uid = body.get("metadata", {}).get("uid", "unknown")
