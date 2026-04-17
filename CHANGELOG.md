@@ -1,3 +1,10 @@
+## [1.3.2](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.3.1...v1.3.2) (2026-04-17)
+
+
+### Bug Fixes
+
+* **zta:** anifest spec hash mismatch ([956be4f](https://github.com/SabinGhost19/ZTApp-Operator/commit/956be4fefbbe35dba6bb93fcd01783dab84438b0))
+
 ## [1.3.1](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.3.0...v1.3.1) (2026-04-17)
 
 
