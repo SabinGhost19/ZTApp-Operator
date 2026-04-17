@@ -1,3 +1,10 @@
+## [1.3.4](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.3.3...v1.3.4) (2026-04-17)
+
+
+### Bug Fixes
+
+* **zta-operator:** skip Istio and Falco resources when ZTA spec omits wafConfig and runtimeSecurity ([2154c29](https://github.com/SabinGhost19/ZTApp-Operator/commit/2154c2926c28be6be69f5148be0da6760d79640b))
+
 ## [1.3.3](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.3.2...v1.3.3) (2026-04-17)
 
 
