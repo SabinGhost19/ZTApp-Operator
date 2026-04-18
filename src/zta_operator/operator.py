@@ -121,7 +121,7 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
     vulnerability_details: dict[str, Any] = {}
 
     try:
-        _status_patch(custom, namespace, name, {"phase": "Validating", "lastError": "", "trustLevel": trust_level})
+        _status_patch(custom, namespace, name, {"phase": "Validating", "lastError": ""})
 
         matched_policy = get_matching_policy_for_application(
             api_client=api_client,
@@ -143,7 +143,6 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
                 {
                     "phase": "Pending",
                     "lastError": pending_message if trust_level == "UntrustedProvenance" else "",
-                    "trustLevel": trust_level,
                     "securityState": current_status.get("securityState", "PendingProvenance"),
                     "provenance": provenance_status,
                 },
@@ -167,7 +166,6 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
                 name,
                 {
                     "phase": "Degraded",
-                    "trustLevel": trust_level,
                     "securityState": state,
                     "activeViolations": _unique_strings(violations),
                     "lastError": "; ".join(_unique_strings(violations)),
@@ -206,7 +204,6 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
                     name,
                     {
                         "phase": "Failed_SupplyChain",
-                        "trustLevel": trust_level,
                         "securityState": state,
                         "activeViolations": _unique_strings(active_violations),
                         "lastError": result.reason,
@@ -264,7 +261,6 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
             {
                 "phase": "Provisioning",
                 "lastError": "",
-                "trustLevel": trust_level,
                 "securityState": effective_security_state,
                 "attestations": attestations,
                 "policyMatchDebug": policy_match_debug,
@@ -343,7 +339,6 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
             {
                 "phase": "Running",
                 "lastError": "",
-                "trustLevel": trust_level,
                 "securityState": effective_security_state,
                 "attestations": attestations,
                 "policyMatchDebug": policy_match_debug,
@@ -362,7 +357,6 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
             name,
             {
                 "phase": "Failed_SupplyChain",
-                "trustLevel": trust_level,
                 "securityState": "NonCompliant",
                 "activeViolations": _unique_strings([str(exc)]),
                 "lastError": str(exc),
@@ -372,7 +366,7 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
         raise kopf.PermanentError(str(exc)) from exc
 
     except (SupplyChainError, TalonConfigError, ApiException, ValueError) as exc:
-        _status_patch(custom, namespace, name, {"phase": "Degraded", "lastError": str(exc), "trustLevel": trust_level})
+        _status_patch(custom, namespace, name, {"phase": "Degraded", "lastError": str(exc)})
         adapter.exception("Reconciliation failed", extra={"event": "reconcile-error"})
         raise kopf.TemporaryError(str(exc), delay=30) from exc
 
