@@ -1,3 +1,10 @@
+## [1.3.7](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.3.6...v1.3.7) (2026-04-18)
+
+
+### Bug Fixes
+
+* reconcile ui ([d32e0eb](https://github.com/SabinGhost19/ZTApp-Operator/commit/d32e0eb131918c7a8fd59924e2dc9e335d2aca83))
+
 ## [1.3.6](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.3.5...v1.3.6) (2026-04-18)
 
 
