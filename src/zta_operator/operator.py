@@ -378,8 +378,8 @@ def reconcile_on_spec(spec: dict, name: str, namespace: str, body: dict, patch: 
     _reconcile_impl(spec=spec, name=name, namespace=namespace, body=body, patch=patch, **kwargs)
 
 
-@kopf.on.field(GROUP, VERSION, PLURAL, field="status.provenance.verifiedAt")
-def reconcile_on_provenance_verified(
+@kopf.on.field(GROUP, VERSION, PLURAL, field="status.trustLevel")
+def reconcile_on_trust_level(
     spec: dict,
     name: str,
     namespace: str,
@@ -389,9 +389,11 @@ def reconcile_on_provenance_verified(
     new: Any,
     **kwargs: Any,
 ) -> None:
-    old_value = str(old or "").strip()
-    new_value = str(new or "").strip()
-    if not new_value or new_value == old_value:
+    old_value = str(old or "").strip().lower()
+    new_value = str(new or "").strip().lower()
+
+    # Only run once when provenance-enforcer moves trustLevel to Verified.
+    if new_value != "verified" or old_value == new_value:
         return
 
     _reconcile_impl(spec=spec, name=name, namespace=namespace, body=body, patch=patch, **kwargs)
