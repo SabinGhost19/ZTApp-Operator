@@ -3,7 +3,7 @@ fullnameOverride: ""
 
 image:
   repository: ghcr.io/sabinghost19/zta-operator
-  tag: sha-65e8429
+  tag: sha-5285ef8
   pullPolicy: IfNotPresent
 
 replicaCount: 1
