@@ -1,3 +1,10 @@
+## [1.3.6](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.3.5...v1.3.6) (2026-04-18)
+
+
+### Bug Fixes
+
+* **zta-runtime:** stop modifiing status trusted ([08a35f4](https://github.com/SabinGhost19/ZTApp-Operator/commit/08a35f404c6197a50a7cbc77f8edbf593b861cd9))
+
 ## [1.3.5](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.3.4...v1.3.5) (2026-04-17)
 
 
