@@ -86,10 +86,7 @@ def startup_fn(**_: Any) -> None:
         config.load_kube_config()
 
 
-@kopf.on.create(GROUP, VERSION, PLURAL)
-@kopf.on.field(GROUP, VERSION, PLURAL, field="spec")
-@kopf.on.field(GROUP, VERSION, PLURAL, field="status.provenance.verifiedAt")
-def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **_: Any) -> None:
+def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, patch: dict, **_: Any) -> None:
     reconcile_id = new_reconcile_id()
     uid = body.get("metadata", {}).get("uid", "unknown")
 
@@ -369,6 +366,35 @@ def reconcile(spec: dict, name: str, namespace: str, body: dict, patch: dict, **
         _status_patch(custom, namespace, name, {"phase": "Degraded", "lastError": str(exc)})
         adapter.exception("Reconciliation failed", extra={"event": "reconcile-error"})
         raise kopf.TemporaryError(str(exc), delay=30) from exc
+
+
+@kopf.on.create(GROUP, VERSION, PLURAL)
+def reconcile_on_create(spec: dict, name: str, namespace: str, body: dict, patch: dict, **kwargs: Any) -> None:
+    _reconcile_impl(spec=spec, name=name, namespace=namespace, body=body, patch=patch, **kwargs)
+
+
+@kopf.on.field(GROUP, VERSION, PLURAL, field="spec")
+def reconcile_on_spec(spec: dict, name: str, namespace: str, body: dict, patch: dict, **kwargs: Any) -> None:
+    _reconcile_impl(spec=spec, name=name, namespace=namespace, body=body, patch=patch, **kwargs)
+
+
+@kopf.on.field(GROUP, VERSION, PLURAL, field="status.provenance.verifiedAt")
+def reconcile_on_provenance_verified(
+    spec: dict,
+    name: str,
+    namespace: str,
+    body: dict,
+    patch: dict,
+    old: Any,
+    new: Any,
+    **kwargs: Any,
+) -> None:
+    old_value = str(old or "").strip()
+    new_value = str(new or "").strip()
+    if not new_value or new_value == old_value:
+        return
+
+    _reconcile_impl(spec=spec, name=name, namespace=namespace, body=body, patch=patch, **kwargs)
 
 
 @kopf.on.delete(GROUP, VERSION, PLURAL)
