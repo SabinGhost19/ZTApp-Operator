@@ -1,3 +1,10 @@
+## [1.3.9](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.3.8...v1.3.9) (2026-04-18)
+
+
+### Bug Fixes
+
+* reconcile zta resource ([5285ef8](https://github.com/SabinGhost19/ZTApp-Operator/commit/5285ef8757a3de92655df88b046ee83256a36571))
+
 ## [1.3.8](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.3.7...v1.3.8) (2026-04-18)
 
 
