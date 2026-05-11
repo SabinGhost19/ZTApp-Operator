@@ -32,7 +32,7 @@ spec:
                   default: 1
                 securityPolicyRef:
                   type: object
-                  required: [name]
+                  required: [ name ]
                   properties:
                     name:
                       type: string
@@ -62,7 +62,7 @@ spec:
                   properties:
                     mode:
                       type: string
-                      enum: [Monitor, Block]
+                      enum: [ Monitor, Block ]
                       default: Block
                     appProfile:
                       type: string
@@ -76,8 +76,55 @@ spec:
                         type: string
                     onCompromise:
                       type: string
-                      enum: [Isolate, Kill]
+                      enum: [ Isolate, Kill ]
                       default: Isolate
+                ingress:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                    host:
+                      type: string
+                    className:
+                      type: string
+                      default: nginx
+                    path:
+                      type: string
+                      default: /
+                    pathType:
+                      type: string
+                      default: Prefix
+                    servicePort:
+                      type: integer
+                      default: 80
+                    authUrl:
+                      type: string
+                    authSignin:
+                      type: string
+                    authResponseHeaders:
+                      type: string
+                    oauth2Enabled:
+                      type: boolean
+                      default: true
+                    oauth2ServiceName:
+                      type: string
+                      default: oauth2-proxy
+                    oauth2ServiceNamespace:
+                      type: string
+                      default: oauth2-proxy
+                    oauth2ServicePort:
+                      type: integer
+                      default: 80
+                    oauth2IngressPath:
+                      type: string
+                      default: /oauth2
+                    groupsHeader:
+                      type: string
+                      default: X-Forwarded-Groups
+                    groupsHeaderFallback:
+                      type: string
+                      default: X-Auth-Request-Groups
             status:
               type: object
               properties:
@@ -87,7 +134,7 @@ spec:
                   type: string
                 trustLevel:
                   type: string
-                  enum: [Untrusted, Verified, UntrustedProvenance]
+                  enum: [ Untrusted, Verified, UntrustedProvenance ]
                 securityState:
                   type: string
                 lastVerified:

@@ -36,6 +36,29 @@ TRIVY_TIMEOUT_SECONDS = int(os.getenv("TRIVY_TIMEOUT_SECONDS", "180"))
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
+INGRESS_CLASS_NAME = os.getenv("INGRESS_CLASS_NAME", "nginx")
+INGRESS_PATH = os.getenv("INGRESS_PATH", "/")
+INGRESS_PATH_TYPE = os.getenv("INGRESS_PATH_TYPE", "Prefix")
+
+OAUTH2_AUTH_URL = os.getenv(
+    "OAUTH2_AUTH_URL",
+    "http://oauth2-proxy.oauth2-proxy.svc.cluster.local/oauth2/auth",
+)
+OAUTH2_AUTH_SIGNIN = os.getenv(
+    "OAUTH2_AUTH_SIGNIN",
+    "https://{host}/oauth2/start?rd=$escaped_request_uri",
+)
+OAUTH2_AUTH_RESPONSE_HEADERS = os.getenv(
+    "OAUTH2_AUTH_RESPONSE_HEADERS",
+    "X-Auth-Request-User, X-Auth-Request-Email, X-Auth-Request-Groups",
+)
+OAUTH2_GROUPS_HEADER = os.getenv("OAUTH2_GROUPS_HEADER", "X-Forwarded-Groups")
+OAUTH2_GROUPS_HEADER_FALLBACK = os.getenv("OAUTH2_GROUPS_HEADER_FALLBACK", "X-Auth-Request-Groups")
+OAUTH2_PROXY_SERVICE_NAME = os.getenv("OAUTH2_PROXY_SERVICE_NAME", "oauth2-proxy")
+OAUTH2_PROXY_NAMESPACE = os.getenv("OAUTH2_PROXY_NAMESPACE", "oauth2-proxy")
+OAUTH2_PROXY_PORT = int(os.getenv("OAUTH2_PROXY_PORT", "80"))
+OAUTH2_INGRESS_PATH = os.getenv("OAUTH2_INGRESS_PATH", "/oauth2")
+
 SEVERITY_ORDER = {
     "LOW": 1,
     "MEDIUM": 2,

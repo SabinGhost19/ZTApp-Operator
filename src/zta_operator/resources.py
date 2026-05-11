@@ -26,6 +26,13 @@ def _metadata(name: str, namespace: str, owner: dict) -> dict:
     }
 
 
+def _header_to_upstream_var(header_name: str) -> str:
+    normalized = str(header_name or "").strip().lower().replace("-", "_")
+    if not normalized:
+        return ""
+    return f"$upstream_http_{normalized}"
+
+
 def build_deployment(
     name: str,
     namespace: str,
@@ -80,6 +87,134 @@ def build_service(name: str, namespace: str, owner: dict, port: int = 80) -> dic
         "spec": {
             "selector": {"app": name},
             "ports": [{"port": port, "targetPort": port, "protocol": "TCP", "name": "http"}],
+        },
+    }
+
+
+def build_ingress(
+    name: str,
+    namespace: str,
+    owner: dict,
+    host: str,
+    service_name: str,
+    service_port: int,
+    class_name: str,
+    path: str,
+    path_type: str,
+    auth_url: str,
+    auth_signin: str,
+    auth_response_headers: str,
+    jit_group: str,
+    groups_header: str,
+    groups_header_fallback: str,
+) -> dict:
+    primary_var = _header_to_upstream_var(groups_header)
+    fallback_var = _header_to_upstream_var(groups_header_fallback)
+    if not primary_var:
+        raise ValueError("groups_header is required for ingress auth snippet")
+
+    snippet_lines = [f"auth_request_set $user_groups {primary_var};"]
+    if fallback_var and fallback_var != primary_var:
+        snippet_lines.append('if ($user_groups = "") {')
+        snippet_lines.append(f"  set $user_groups {fallback_var};")
+        snippet_lines.append("}")
+    snippet_lines.append(f"if ($user_groups !~* \"{jit_group}\") {{")
+    snippet_lines.append('  return 403 "JIT Access Required. Request in Admin Console.";')
+    snippet_lines.append("}")
+
+    annotations = {
+        "nginx.ingress.kubernetes.io/auth-url": auth_url,
+        "nginx.ingress.kubernetes.io/auth-signin": auth_signin,
+        "nginx.ingress.kubernetes.io/auth-response-headers": auth_response_headers,
+        "nginx.ingress.kubernetes.io/configuration-snippet": "\n".join(snippet_lines),
+    }
+
+    return {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "Ingress",
+        "metadata": {
+            **_metadata(name, namespace, owner),
+            "annotations": annotations,
+        },
+        "spec": {
+            "ingressClassName": class_name,
+            "rules": [
+                {
+                    "host": host,
+                    "http": {
+                        "paths": [
+                            {
+                                "path": path,
+                                "pathType": path_type,
+                                "backend": {
+                                    "service": {
+                                        "name": service_name,
+                                        "port": {"number": service_port},
+                                    }
+                                },
+                            }
+                        ]
+                    },
+                }
+            ],
+        },
+    }
+
+
+def build_external_name_service(
+    name: str,
+    namespace: str,
+    owner: dict,
+    external_name: str,
+    port: int = 80,
+) -> dict:
+    return {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": _metadata(name, namespace, owner),
+        "spec": {
+            "type": "ExternalName",
+            "externalName": external_name,
+            "ports": [{"name": "http", "port": port, "targetPort": port}],
+        },
+    }
+
+
+def build_oauth2_ingress(
+    name: str,
+    namespace: str,
+    owner: dict,
+    host: str,
+    class_name: str,
+    path: str,
+    service_name: str,
+    service_port: int,
+) -> dict:
+    return {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "Ingress",
+        "metadata": _metadata(name, namespace, owner),
+        "spec": {
+            "ingressClassName": class_name,
+            "rules": [
+                {
+                    "host": host,
+                    "http": {
+                        "paths": [
+                            {
+                                "path": path,
+                                "pathType": "Prefix",
+                                "backend": {
+                                    "service": {
+                                        "name": service_name,
+                                        "port": {"number": service_port},
+                                    }
+                                },
+                            }
+                        ]
+                    },
+                }
+            ],
         },
     }
 
@@ -257,6 +392,10 @@ def apply_object(api_client: client.ApiClient, obj: dict) -> None:
             networking.read_namespaced_network_policy(name=name, namespace=namespace)
             networking.patch_namespaced_network_policy(name=name, namespace=namespace, body=obj)
             return
+        if group == "networking.k8s.io" and kind == "Ingress":
+            networking.read_namespaced_ingress(name=name, namespace=namespace)
+            networking.patch_namespaced_ingress(name=name, namespace=namespace, body=obj)
+            return
 
         last_exc = None
         for custom_group, custom_version, plural, candidate_obj in _iter_custom_object_candidates(obj):
@@ -315,6 +454,9 @@ def apply_object(api_client: client.ApiClient, obj: dict) -> None:
             return
         if group == "networking.k8s.io" and kind == "NetworkPolicy":
             networking.create_namespaced_network_policy(namespace=namespace, body=obj)
+            return
+        if group == "networking.k8s.io" and kind == "Ingress":
+            networking.create_namespaced_ingress(namespace=namespace, body=obj)
             return
 
         last_exc = None

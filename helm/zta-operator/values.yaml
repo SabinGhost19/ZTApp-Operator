@@ -18,6 +18,19 @@ operator:
   talonNamespace: falco-talon
   talonConfigMapName: falco-talon-rules
   talonConfigMapKey: rules.yaml
+  ingress:
+    className: nginx
+    path: /
+    pathType: Prefix
+    authUrl: http://oauth2-proxy.oauth2-proxy.svc.cluster.local/oauth2/auth
+    authSigninTemplate: https://{host}/oauth2/start?rd=$escaped_request_uri
+    authResponseHeaders: X-Auth-Request-User, X-Auth-Request-Email, X-Auth-Request-Groups
+    groupsHeader: X-Forwarded-Groups
+    groupsHeaderFallback: X-Auth-Request-Groups
+    oauth2ServiceName: oauth2-proxy
+    oauth2ServiceNamespace: oauth2-proxy
+    oauth2ServicePort: 80
+    oauth2IngressPath: /oauth2
 
 resources: {}
 nodeSelector: {}

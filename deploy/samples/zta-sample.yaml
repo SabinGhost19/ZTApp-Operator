@@ -13,7 +13,7 @@ spec:
       - namespace: api-gateway
     egressAllowedTo:
       - namespace: database
-        ports: [5432]
+        ports: [ 5432 ]
   wafConfig:
     mode: Block
     appProfile: REST-API
@@ -21,3 +21,6 @@ spec:
     allowedPaths:
       - /tmp/app-data
     onCompromise: Isolate
+  ingress:
+    enabled: true
+    host: demo-api.licenta.ro

@@ -30,6 +30,30 @@ spec:
               value: {{ .Values.operator.talonConfigMapName | quote }}
             - name: TALON_CONFIGMAP_KEY
               value: {{ .Values.operator.talonConfigMapKey | quote }}
+            - name: INGRESS_CLASS_NAME
+              value: {{ .Values.operator.ingress.className | quote }}
+            - name: INGRESS_PATH
+              value: {{ .Values.operator.ingress.path | quote }}
+            - name: INGRESS_PATH_TYPE
+              value: {{ .Values.operator.ingress.pathType | quote }}
+            - name: OAUTH2_AUTH_URL
+              value: {{ .Values.operator.ingress.authUrl | quote }}
+            - name: OAUTH2_AUTH_SIGNIN
+              value: {{ .Values.operator.ingress.authSigninTemplate | quote }}
+            - name: OAUTH2_AUTH_RESPONSE_HEADERS
+              value: {{ .Values.operator.ingress.authResponseHeaders | quote }}
+            - name: OAUTH2_GROUPS_HEADER
+              value: {{ .Values.operator.ingress.groupsHeader | quote }}
+            - name: OAUTH2_GROUPS_HEADER_FALLBACK
+              value: {{ .Values.operator.ingress.groupsHeaderFallback | quote }}
+            - name: OAUTH2_PROXY_SERVICE_NAME
+              value: {{ .Values.operator.ingress.oauth2ServiceName | quote }}
+            - name: OAUTH2_PROXY_NAMESPACE
+              value: {{ .Values.operator.ingress.oauth2ServiceNamespace | quote }}
+            - name: OAUTH2_PROXY_PORT
+              value: {{ .Values.operator.ingress.oauth2ServicePort | quote }}
+            - name: OAUTH2_INGRESS_PATH
+              value: {{ .Values.operator.ingress.oauth2IngressPath | quote }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}

@@ -5,14 +5,34 @@ import kopf
 from kubernetes import client, config
 from kubernetes.client.exceptions import ApiException
 
-from .config import GROUP, KIND, PLURAL, VERSION
+from .config import (
+    GROUP,
+    KIND,
+    PLURAL,
+    VERSION,
+    INGRESS_CLASS_NAME,
+    INGRESS_PATH,
+    INGRESS_PATH_TYPE,
+    OAUTH2_AUTH_URL,
+    OAUTH2_AUTH_SIGNIN,
+    OAUTH2_AUTH_RESPONSE_HEADERS,
+    OAUTH2_GROUPS_HEADER,
+    OAUTH2_GROUPS_HEADER_FALLBACK,
+    OAUTH2_PROXY_SERVICE_NAME,
+    OAUTH2_PROXY_NAMESPACE,
+    OAUTH2_PROXY_PORT,
+    OAUTH2_INGRESS_PATH,
+)
 from .logging_utils import configure_logging, ctx, new_reconcile_id
 from .resources import (
     apply_object,
     build_authorization_policy,
     build_deployment,
     build_falco_rule_configmap,
+    build_external_name_service,
+    build_ingress,
     build_network_policy,
+    build_oauth2_ingress,
     build_service,
     build_wasm_plugin,
 )
@@ -109,6 +129,21 @@ def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, patch: di
     waf = desired_spec.get("wafConfig", {})
     waf_mode = str(waf.get("mode", "Block")).strip()
     app_profile = str(waf.get("appProfile", "REST-API")).strip()
+
+    ingress_spec = desired_spec.get("ingress", {}) or {}
+    ingress_enabled = bool(ingress_spec.get("enabled", False))
+    ingress_host = str(ingress_spec.get("host", "")).strip()
+    ingress_class = str(ingress_spec.get("className", "") or INGRESS_CLASS_NAME).strip()
+    ingress_path = str(ingress_spec.get("path", "") or INGRESS_PATH).strip()
+    ingress_path_type = str(ingress_spec.get("pathType", "") or INGRESS_PATH_TYPE).strip()
+    service_port = int(ingress_spec.get("servicePort", 80))
+    oauth2_enabled = bool(ingress_spec.get("oauth2Enabled", True))
+    oauth2_service_name = str(ingress_spec.get("oauth2ServiceName", "") or OAUTH2_PROXY_SERVICE_NAME).strip()
+    oauth2_service_namespace = str(ingress_spec.get("oauth2ServiceNamespace", "") or OAUTH2_PROXY_NAMESPACE).strip()
+    oauth2_service_port = int(ingress_spec.get("oauth2ServicePort", OAUTH2_PROXY_PORT))
+    oauth2_ingress_path = str(ingress_spec.get("oauth2IngressPath", "") or OAUTH2_INGRESS_PATH).strip()
+    groups_header = str(ingress_spec.get("groupsHeader", "") or OAUTH2_GROUPS_HEADER).strip()
+    groups_header_fallback = str(ingress_spec.get("groupsHeaderFallback", "") or OAUTH2_GROUPS_HEADER_FALLBACK).strip()
 
     runtime = desired_spec.get("runtimeSecurity", {})
     allowed_paths = runtime.get("allowedPaths", []) or []
@@ -279,8 +314,66 @@ def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, patch: di
                 owner=owner,
                 runtime_security_enabled=bool(runtime),
             ),
-            build_service(name=name, namespace=namespace, owner=owner),
+            build_service(name=name, namespace=namespace, owner=owner, port=service_port),
         ]
+
+        if ingress_enabled:
+            if not ingress_host:
+                raise ValueError("spec.ingress.host is required when ingress.enabled is true")
+
+            auth_signin = str(ingress_spec.get("authSignin", "") or OAUTH2_AUTH_SIGNIN).strip()
+            if "{host}" in auth_signin:
+                auth_signin = auth_signin.format(host=ingress_host)
+
+            auth_url = str(ingress_spec.get("authUrl", "") or OAUTH2_AUTH_URL).strip()
+            auth_headers = str(ingress_spec.get("authResponseHeaders", "") or OAUTH2_AUTH_RESPONSE_HEADERS).strip()
+
+            if oauth2_enabled:
+                if not oauth2_service_namespace:
+                    raise ValueError("spec.ingress.oauth2ServiceNamespace is required when oauth2Enabled is true")
+
+                oauth2_external_name = f"{oauth2_service_name}.{oauth2_service_namespace}.svc.cluster.local"
+                objects.append(
+                    build_external_name_service(
+                        name=oauth2_service_name,
+                        namespace=namespace,
+                        owner=owner,
+                        external_name=oauth2_external_name,
+                        port=oauth2_service_port,
+                    )
+                )
+                objects.append(
+                    build_oauth2_ingress(
+                        name=f"{name}-oauth2",
+                        namespace=namespace,
+                        owner=owner,
+                        host=ingress_host,
+                        class_name=ingress_class,
+                        path=oauth2_ingress_path,
+                        service_name=oauth2_service_name,
+                        service_port=oauth2_service_port,
+                    )
+                )
+
+            objects.append(
+                build_ingress(
+                    name=f"{name}-ingress",
+                    namespace=namespace,
+                    owner=owner,
+                    host=ingress_host,
+                    service_name=name,
+                    service_port=service_port,
+                    class_name=ingress_class,
+                    path=ingress_path,
+                    path_type=ingress_path_type,
+                    auth_url=auth_url,
+                    auth_signin=auth_signin,
+                    auth_response_headers=auth_headers,
+                    jit_group=f"jit-access-{name}",
+                    groups_header=groups_header,
+                    groups_header_fallback=groups_header_fallback,
+                )
+            )
 
         if ingress_allowed_from or egress_allowed_to:
             objects.append(
