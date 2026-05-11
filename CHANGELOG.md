@@ -1,3 +1,10 @@
+## [1.3.10](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.3.9...v1.3.10) (2026-05-11)
+
+
+### Bug Fixes
+
+* RBAC guards, JIT token flow, ZTA polling stability and operator namespace alignment ([de0b111](https://github.com/SabinGhost19/ZTApp-Operator/commit/de0b1112b2d45c1364ab3616cd2fa84d046dfe37))
+
 ## [1.3.9](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.3.8...v1.3.9) (2026-04-18)
 
 
