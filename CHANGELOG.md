@@ -1,3 +1,10 @@
+# [1.4.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.3.10...v1.4.0) (2026-05-12)
+
+
+### Features
+
+* **ui:** horizontal CI/CD pipeline + granular sub-task forensics ([c497195](https://github.com/SabinGhost19/ZTApp-Operator/commit/c49719537e6d204c59a3264e6bb84c0049d80f18))
+
 ## [1.3.10](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.3.9...v1.3.10) (2026-05-11)
 
 
