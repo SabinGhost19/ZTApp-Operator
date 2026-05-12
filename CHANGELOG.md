@@ -1,3 +1,10 @@
+## [1.4.2](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.4.1...v1.4.2) (2026-05-12)
+
+
+### Bug Fixes
+
+* **operator:** persist spec hash via CRD schema + annotation fallback ([2ed7358](https://github.com/SabinGhost19/ZTApp-Operator/commit/2ed735889995beb527b0b57291ee2524052fa5c8))
+
 ## [1.4.1](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.4.0...v1.4.1) (2026-05-12)
 
 
