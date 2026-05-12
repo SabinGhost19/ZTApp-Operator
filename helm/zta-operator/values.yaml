@@ -41,7 +41,7 @@ rbac:
   create: true
 
 falcoTalonRbac:
-  enabled: true
+  enabled: false
   namespace: falco-talon
   configMapName: falco-talon-rules
 

@@ -1,3 +1,5 @@
+import hashlib
+import json
 import logging
 from typing import Any
 
@@ -107,6 +109,19 @@ def startup_fn(**_: Any) -> None:
         config.load_kube_config()
 
 
+def _hash_desired_spec(desired_spec: dict[str, Any]) -> str:
+    """Stable SHA256 of the spec used to detect "already-converged" state.
+
+    Stops the reconcile loop when kopf re-fires `reconcile_on_trust_level`
+    (or `reconcile_on_spec`) for an unchanged spec — without this guard,
+    cosign + trivy were being re-run every 30s on a stable workload,
+    burning CPU and racing with provenance-enforcer's status patches.
+    """
+    return hashlib.sha256(
+        json.dumps(desired_spec or {}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 async def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, patch: dict, **_: Any) -> None:
     reconcile_id = new_reconcile_id()
     uid = body.get("metadata", {}).get("uid", "unknown")
@@ -119,6 +134,30 @@ async def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, pat
     current_status = body.get("status", {}) or {}
 
     desired_spec = body.get("spec", {}) or dict(spec)
+
+    # ----------------------------------------------------------------------
+    # Idempotency short-circuit
+    # ----------------------------------------------------------------------
+    # If the spec hash matches what we converged on last time, and the ZTA
+    # is in a healthy terminal state, skip the entire pipeline. This breaks
+    # the spurious reconcile loops we see when kopf field watchers fire on
+    # no-op status patches from provenance-enforcer.
+    spec_hash = _hash_desired_spec(desired_spec)
+    prev_hash = str(current_status.get("specReconcileHash", "") or "").strip()
+    prev_phase = str(current_status.get("phase", "") or "").strip()
+    prev_trust = str(current_status.get("trustLevel", "") or "").strip()
+    has_error = bool(str(current_status.get("lastError", "") or "").strip())
+    if (
+        prev_hash == spec_hash
+        and prev_phase == "Running"
+        and prev_trust == "Verified"
+        and not has_error
+    ):
+        adapter.info(
+            "ZTA already converged for this spec; skipping reconcile",
+            extra={"event": "reconcile-skipped-idempotent", "spec_hash": spec_hash[:16]},
+        )
+        return
 
     image = str(desired_spec.get("image", "")).strip()
     replicas = int(desired_spec.get("replicas", 1))
@@ -437,9 +476,12 @@ async def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, pat
                 "lastVerified": attestation_status.get("lastVerified"),
                 "provenance": current_status.get("provenance", {}),
                 "details": vulnerability_details,
+                # Spec hash watermark — next reconcile with the same spec
+                # will short-circuit at the top of _reconcile_impl.
+                "specReconcileHash": spec_hash,
             },
         )
-        adapter.info("Reconciliation completed", extra={"event": "reconcile-success", "phase": "Running"})
+        adapter.info("Reconciliation completed", extra={"event": "reconcile-success", "phase": "Running", "spec_hash": spec_hash[:16]})
 
     except SupplyChainPolicyMissingError as exc:
         # Declarative recovery: SCA may be applied after ZTA (Helm/ArgoCD
