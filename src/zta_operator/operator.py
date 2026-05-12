@@ -38,6 +38,7 @@ from .resources import (
 )
 from .supply_chain_attestation import (
     SupplyChainPolicyError,
+    SupplyChainPolicyMissingError,
     apply_sanction,
     check_runtime_drift,
     get_matching_policy_for_application,
@@ -106,7 +107,7 @@ def startup_fn(**_: Any) -> None:
         config.load_kube_config()
 
 
-def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, patch: dict, **_: Any) -> None:
+async def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, patch: dict, **_: Any) -> None:
     reconcile_id = new_reconcile_id()
     uid = body.get("metadata", {}).get("uid", "unknown")
 
@@ -207,7 +208,7 @@ def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, patch: di
             raise kopf.PermanentError("Runtime policy drift detected")
 
         adapter.info("Starting supply-chain verification", extra={"event": "supply-chain-start"})
-        result = verify_supply_chain(
+        result = await verify_supply_chain(
             image=image,
             require_signature=bool(effective_policy.get("requireSignature", True)),
             trusted_identities=list(effective_policy.get("trustedIdentities", [])),
@@ -248,7 +249,7 @@ def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, patch: di
                 )
                 raise kopf.PermanentError(f"Supply chain verification failed: {result.reason}")
 
-        attestation_status = current_status if current_status.get("attestations") else validate_admission_with_attestations(
+        attestation_status = current_status if current_status.get("attestations") else await validate_admission_with_attestations(
             api_client=api_client,
             namespace=namespace,
             app_name=name,
@@ -440,6 +441,24 @@ def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, patch: di
         )
         adapter.info("Reconciliation completed", extra={"event": "reconcile-success", "phase": "Running"})
 
+    except SupplyChainPolicyMissingError as exc:
+        # Declarative recovery: SCA may be applied after ZTA (Helm/ArgoCD
+        # don't guarantee order). Surface a Pending state and retry every
+        # 15s so the system self-heals when the SCA appears.
+        _status_patch(
+            custom,
+            namespace,
+            name,
+            {
+                "phase": "Pending",
+                "securityState": "WaitingForPolicy",
+                "activeViolations": [],
+                "lastError": str(exc),
+            },
+        )
+        adapter.info("Referenced SCA not yet present; retrying", extra={"event": "sca-policy-missing"})
+        raise kopf.TemporaryError(str(exc), delay=15) from exc
+
     except SupplyChainPolicyError as exc:
         _status_patch(
             custom,
@@ -462,17 +481,17 @@ def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, patch: di
 
 
 @kopf.on.create(GROUP, VERSION, PLURAL)
-def reconcile_on_create(spec: dict, name: str, namespace: str, body: dict, patch: dict, **kwargs: Any) -> None:
-    _reconcile_impl(spec=spec, name=name, namespace=namespace, body=body, patch=patch, **kwargs)
+async def reconcile_on_create(spec: dict, name: str, namespace: str, body: dict, patch: dict, **kwargs: Any) -> None:
+    await _reconcile_impl(spec=spec, name=name, namespace=namespace, body=body, patch=patch, **kwargs)
 
 
 @kopf.on.field(GROUP, VERSION, PLURAL, field="spec")
-def reconcile_on_spec(spec: dict, name: str, namespace: str, body: dict, patch: dict, **kwargs: Any) -> None:
-    _reconcile_impl(spec=spec, name=name, namespace=namespace, body=body, patch=patch, **kwargs)
+async def reconcile_on_spec(spec: dict, name: str, namespace: str, body: dict, patch: dict, **kwargs: Any) -> None:
+    await _reconcile_impl(spec=spec, name=name, namespace=namespace, body=body, patch=patch, **kwargs)
 
 
 @kopf.on.field(GROUP, VERSION, PLURAL, field="status.trustLevel")
-def reconcile_on_trust_level(
+async def reconcile_on_trust_level(
     spec: dict,
     name: str,
     namespace: str,
@@ -489,7 +508,7 @@ def reconcile_on_trust_level(
     if new_value != "verified" or old_value == new_value:
         return
 
-    _reconcile_impl(spec=spec, name=name, namespace=namespace, body=body, patch=patch, **kwargs)
+    await _reconcile_impl(spec=spec, name=name, namespace=namespace, body=body, patch=patch, **kwargs)
 
 
 @kopf.on.delete(GROUP, VERSION, PLURAL)

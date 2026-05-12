@@ -1,8 +1,8 @@
+import asyncio
 import hashlib
 import json
 import logging
 import re
-import subprocess
 from collections.abc import Mapping, Sequence, Set
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -24,10 +24,40 @@ from .config import (
 )
 from .logging_utils import configure_logging, ctx, new_reconcile_id
 
+
+async def _run_cosign(cmd: list[str], timeout: int) -> tuple[int, str, str]:
+    """Run a cosign command without blocking the event loop."""
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise SupplyChainPolicyError(f"cosign command timed out after {timeout}s")
+    return (
+        proc.returncode or 0,
+        stdout_bytes.decode("utf-8", errors="replace"),
+        stderr_bytes.decode("utf-8", errors="replace"),
+    )
+
 logger = configure_logging()
 
 
 class SupplyChainPolicyError(Exception):
+    pass
+
+
+class SupplyChainPolicyMissingError(SupplyChainPolicyError):
+    """Referenced SCA does not yet exist in the cluster.
+
+    Treated as a transient state by the reconciler (TemporaryError → retry)
+    so the system is self-healing when SCA and ZTA are applied out of order
+    (e.g. via Helm/ArgoCD where K8s does not guarantee apply order).
+    """
     pass
 
 
@@ -135,7 +165,7 @@ def _decode_attestation_predicate(attestation_obj: dict[str, Any]) -> tuple[str 
     return predicate_type, predicate
 
 
-def _verify_attestation_by_type(image: str, attestation_type: str, trusted_issuers: list[str]) -> dict[str, Any]:
+async def _verify_attestation_by_type(image: str, attestation_type: str, trusted_issuers: list[str]) -> dict[str, Any]:
     last_error = ""
     for identity in trusted_issuers:
         cmd = [
@@ -149,12 +179,12 @@ def _verify_attestation_by_type(image: str, attestation_type: str, trusted_issue
             "--certificate-oidc-issuer",
             DEFAULT_ISSUER,
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=VERIFY_TIMEOUT_SECONDS)
-        if result.returncode != 0:
-            last_error = result.stderr or result.stdout
+        returncode, stdout, stderr = await _run_cosign(cmd, timeout=VERIFY_TIMEOUT_SECONDS)
+        if returncode != 0:
+            last_error = stderr or stdout
             continue
 
-        for obj in _extract_json_objects(result.stdout):
+        for obj in _extract_json_objects(stdout):
             predicate_type, predicate = _decode_attestation_predicate(obj)
             if predicate is not None and predicate_type:
                 return {
@@ -168,16 +198,16 @@ def _verify_attestation_by_type(image: str, attestation_type: str, trusted_issue
     )
 
 
-def _resolve_digest(image: str) -> str:
+async def _resolve_digest(image: str) -> str:
     if "@sha256:" in image:
         return image
 
     cmd = [COSIGN_BIN, "triangulate", image]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=VERIFY_TIMEOUT_SECONDS)
-    if result.returncode != 0:
-        raise SupplyChainPolicyError(f"Failed to resolve digest for image {image}: {result.stderr or result.stdout}")
+    returncode, stdout, stderr = await _run_cosign(cmd, timeout=VERIFY_TIMEOUT_SECONDS)
+    if returncode != 0:
+        raise SupplyChainPolicyError(f"Failed to resolve digest for image {image}: {stderr or stdout}")
 
-    digest_ref = result.stdout.strip()
+    digest_ref = stdout.strip()
     if not digest_ref:
         raise SupplyChainPolicyError(f"Empty digest resolution for image {image}")
 
@@ -285,7 +315,7 @@ def _get_policy_by_reference(
         )
     except ApiException as exc:
         if exc.status == 404:
-            raise SupplyChainPolicyError(f"Referenced SupplyChainAttestation not found: {policy_name}") from exc
+            raise SupplyChainPolicyMissingError(f"Referenced SupplyChainAttestation not found: {policy_name}") from exc
         raise
 
 
@@ -457,7 +487,7 @@ def apply_sanction(api_client: client.ApiClient, namespace: str, app_name: str, 
     return "Isolated"
 
 
-def validate_admission_with_attestations(
+async def validate_admission_with_attestations(
     api_client: client.ApiClient,
     namespace: str,
     app_name: str,
@@ -507,7 +537,7 @@ def validate_admission_with_attestations(
     if not trusted_issuers:
         raise SupplyChainPolicyError("SupplyChainAttestation sourceValidation.trustedIssuers is empty")
 
-    resolved_image = _resolve_digest(image)
+    resolved_image = await _resolve_digest(image)
 
     sbom_policy = global_spec.get("sbomPolicy", {}) or {}
     policy_binding = global_spec.get("policyBinding", {}) or {}
@@ -521,7 +551,7 @@ def validate_admission_with_attestations(
     computed_infra_hash = ""
 
     if bool(sbom_policy.get("enforceSBOM", False)):
-        sbom_attestation = _verify_attestation_by_type(
+        sbom_attestation = await _verify_attestation_by_type(
             image=resolved_image,
             attestation_type="spdxjson",
             trusted_issuers=trusted_issuers,
@@ -550,7 +580,7 @@ def validate_admission_with_attestations(
             ).strip()
             or "https://devsecops.licenta.ro/attestations/custom-zta-policy/v1"
         )
-        policy_attestation = _verify_attestation_by_type(
+        policy_attestation = await _verify_attestation_by_type(
             image=resolved_image,
             attestation_type=attestation_type,
             trusted_issuers=trusted_issuers,

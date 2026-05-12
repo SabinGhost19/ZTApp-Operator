@@ -1,5 +1,5 @@
+import asyncio
 import json
-import subprocess
 from dataclasses import dataclass
 from typing import Any
 
@@ -24,6 +24,26 @@ class VerificationResult:
     details: dict[str, Any]
 
 
+async def _run_subprocess(cmd: list[str], timeout: int) -> tuple[int, str, str]:
+    """Run a subprocess without blocking the event loop.
+
+    Returns (returncode, stdout_text, stderr_text). Raises TimeoutError on
+    timeout (caller decides whether to wrap as SupplyChainError).
+    """
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise SupplyChainError(f"Command timed out after {timeout}s: {' '.join(cmd[:2])}")
+    return proc.returncode or 0, stdout_bytes.decode("utf-8", errors="replace"), stderr_bytes.decode("utf-8", errors="replace")
+
+
 def validate_image_reference(image: str) -> None:
     if not image.startswith("ghcr.io/"):
         raise SupplyChainError("Image must use ghcr.io registry.")
@@ -36,7 +56,7 @@ def validate_image_reference(image: str) -> None:
         raise SupplyChainError("Tag 'latest' is forbidden.")
 
 
-def verify_cosign_keyless(image: str, allowed_signer: str) -> VerificationResult:
+async def verify_cosign_keyless(image: str, allowed_signer: str) -> VerificationResult:
     cmd = [
         COSIGN_BIN,
         "verify",
@@ -46,14 +66,14 @@ def verify_cosign_keyless(image: str, allowed_signer: str) -> VerificationResult
         "--certificate-oidc-issuer",
         DEFAULT_ISSUER,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=VERIFY_TIMEOUT_SECONDS)
-    if result.returncode != 0:
+    returncode, stdout, stderr = await _run_subprocess(cmd, timeout=VERIFY_TIMEOUT_SECONDS)
+    if returncode != 0:
         return VerificationResult(
             success=False,
             reason="cosign-verification-failed",
-            details={"stdout": result.stdout, "stderr": result.stderr, "returncode": result.returncode},
+            details={"stdout": stdout, "stderr": stderr, "returncode": returncode},
         )
-    return VerificationResult(success=True, reason="ok", details={"stdout": result.stdout})
+    return VerificationResult(success=True, reason="ok", details={"stdout": stdout})
 
 
 def _max_found_severity(payload: dict[str, Any]) -> str | None:
@@ -78,22 +98,22 @@ def _has_fixable_vulnerabilities(payload: dict[str, Any]) -> bool:
     return False
 
 
-def verify_trivy_threshold(image: str, max_vulnerabilities: str, fail_on_fixable: bool = False) -> VerificationResult:
+async def verify_trivy_threshold(image: str, max_vulnerabilities: str, fail_on_fixable: bool = False) -> VerificationResult:
     threshold = str(max_vulnerabilities).upper()
     if threshold not in SEVERITY_ORDER:
         raise SupplyChainError(f"Invalid maxVulnerabilities: {max_vulnerabilities}")
 
     cmd = [TRIVY_BIN, "image", "--format", "json", image]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=TRIVY_TIMEOUT_SECONDS)
-    if result.returncode != 0:
+    returncode, stdout, stderr = await _run_subprocess(cmd, timeout=TRIVY_TIMEOUT_SECONDS)
+    if returncode != 0:
         return VerificationResult(
             success=False,
             reason="trivy-scan-failed",
-            details={"stdout": result.stdout, "stderr": result.stderr, "returncode": result.returncode},
+            details={"stdout": stdout, "stderr": stderr, "returncode": returncode},
         )
 
     try:
-        payload = json.loads(result.stdout)
+        payload = json.loads(stdout)
     except json.JSONDecodeError as exc:
         raise SupplyChainError("Trivy output is not valid JSON.") from exc
 
@@ -122,7 +142,7 @@ def verify_trivy_threshold(image: str, max_vulnerabilities: str, fail_on_fixable
     )
 
 
-def verify_supply_chain(
+async def verify_supply_chain(
     image: str,
     require_signature: bool,
     trusted_identities: list[str],
@@ -137,7 +157,7 @@ def verify_supply_chain(
             raise SupplyChainError("At least one trusted identity is required when requireSignature is true.")
         last_result: VerificationResult | None = None
         for identity in identities:
-            cosign_result = verify_cosign_keyless(image=image, allowed_signer=str(identity).strip())
+            cosign_result = await verify_cosign_keyless(image=image, allowed_signer=str(identity).strip())
             if cosign_result.success:
                 last_result = cosign_result
                 break
@@ -145,7 +165,7 @@ def verify_supply_chain(
         if not last_result or not last_result.success:
             return last_result or VerificationResult(success=False, reason="cosign-verification-failed", details={})
 
-    return verify_trivy_threshold(
+    return await verify_trivy_threshold(
         image=image,
         max_vulnerabilities=max_vulnerabilities,
         fail_on_fixable=fail_on_fixable,
