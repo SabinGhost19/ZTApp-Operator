@@ -149,6 +149,13 @@ spec:
                   x-kubernetes-preserve-unknown-fields: true
                 details:
                   x-kubernetes-preserve-unknown-fields: true
+                # SHA256 of the desired spec written by the operator after a
+                # successful reconcile. Used as an idempotency watermark to
+                # short-circuit reconcile re-triggers for the same spec
+                # (kopf field watchers can re-fire spuriously when two
+                # operators patch the same CR concurrently).
+                specReconcileHash:
+                  type: string
       subresources:
         status: {}
       additionalPrinterColumns:

@@ -101,6 +101,36 @@ def _falco_rule_name(namespace: str, name: str) -> str:
     return f"Unauthorized_Write_{namespace}_{name}".replace("-", "_")
 
 
+SPEC_HASH_ANNOTATION = "zta.devsecops/spec-reconcile-hash"
+
+
+def _write_spec_hash_annotation(
+    custom: client.CustomObjectsApi,
+    namespace: str,
+    name: str,
+    spec_hash: str,
+) -> None:
+    """Persist the spec hash as a metadata annotation.
+
+    Belt-and-braces with the schema-aware status.specReconcileHash field:
+    annotations are always accepted by the API server even if the CRD
+    schema wasn't upgraded to include the new status field. The metadata
+    PATCH is on the main resource (not the status subresource).
+    """
+    try:
+        custom.patch_namespaced_custom_object(
+            group=GROUP,
+            version=VERSION,
+            namespace=namespace,
+            plural=PLURAL,
+            name=name,
+            body={"metadata": {"annotations": {SPEC_HASH_ANNOTATION: spec_hash}}},
+        )
+    except ApiException:
+        # Non-fatal — the status field is the primary watermark.
+        pass
+
+
 @kopf.on.startup()
 def startup_fn(**_: Any) -> None:
     try:
@@ -142,8 +172,19 @@ async def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, pat
     # is in a healthy terminal state, skip the entire pipeline. This breaks
     # the spurious reconcile loops we see when kopf field watchers fire on
     # no-op status patches from provenance-enforcer.
+    #
+    # Two storage locations are checked, in order:
+    #   1. status.specReconcileHash (requires CRD schema field; primary)
+    #   2. metadata.annotations["zta.devsecops/spec-reconcile-hash"]
+    #      (fallback when CRD schema hasn't been upgraded yet — annotations
+    #      are always accepted by the API server)
     spec_hash = _hash_desired_spec(desired_spec)
-    prev_hash = str(current_status.get("specReconcileHash", "") or "").strip()
+    metadata = body.get("metadata", {}) or {}
+    annotations = metadata.get("annotations", {}) or {}
+    prev_hash = (
+        str(current_status.get("specReconcileHash", "") or "").strip()
+        or str(annotations.get("zta.devsecops/spec-reconcile-hash", "") or "").strip()
+    )
     prev_phase = str(current_status.get("phase", "") or "").strip()
     prev_trust = str(current_status.get("trustLevel", "") or "").strip()
     has_error = bool(str(current_status.get("lastError", "") or "").strip())
@@ -481,6 +522,11 @@ async def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, pat
                 "specReconcileHash": spec_hash,
             },
         )
+        # Mirror the hash to a metadata annotation so the watermark survives
+        # even if the CRD schema hasn't been upgraded to declare the new
+        # status field (in that case the API server would silently drop
+        # status.specReconcileHash and the loop would never break).
+        _write_spec_hash_annotation(custom, namespace, name, spec_hash)
         adapter.info("Reconciliation completed", extra={"event": "reconcile-success", "phase": "Running", "spec_hash": spec_hash[:16]})
 
     except SupplyChainPolicyMissingError as exc:
