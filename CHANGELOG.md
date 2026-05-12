@@ -1,3 +1,10 @@
+## [1.4.1](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.4.0...v1.4.1) (2026-05-12)
+
+
+### Bug Fixes
+
+* **operator:** break reconcile loop with spec-hash idempotency guard ([412459c](https://github.com/SabinGhost19/ZTApp-Operator/commit/412459c08494be14f4645ce0c8c550e857129926))
+
 # [1.4.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.3.10...v1.4.0) (2026-05-12)
 
 
