@@ -1,3 +1,10 @@
+## [1.5.1](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.5.0...v1.5.1) (2026-05-20)
+
+
+### Bug Fixes
+
+* **guac:** align default service URLs with the official guacsec/guac chart ([b28b7fd](https://github.com/SabinGhost19/ZTApp-Operator/commit/b28b7fdfee0d7296345a04b782be6bfa8fef4685))
+
 # [1.5.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.4.2...v1.5.0) (2026-05-20)
 
 
