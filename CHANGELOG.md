@@ -1,3 +1,10 @@
+## [1.5.3](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.5.2...v1.5.3) (2026-05-20)
+
+
+### Bug Fixes
+
+* **guac-client:** fix dead enpoint ([b34a318](https://github.com/SabinGhost19/ZTApp-Operator/commit/b34a31874c85cf7a309d07c81ca1657c843c4bc6))
+
 ## [1.5.2](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.5.1...v1.5.2) (2026-05-20)
 
 
