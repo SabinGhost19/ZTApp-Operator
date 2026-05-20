@@ -149,6 +149,18 @@ spec:
                   x-kubernetes-preserve-unknown-fields: true
                 details:
                   x-kubernetes-preserve-unknown-fields: true
+                # Async telemetry sub-status: the main `phase` flips to
+                # Running as soon as the Deployment is created, while
+                # guacIngestionStatus tracks the slow OCI->GUAC pull on
+                # a background worker thread. Lets the UI render a
+                # green pod card AND a small spinner for "intel pending".
+                guacIngestionStatus:
+                  type: string
+                  enum: [ "", InProgress, Completed, Failed, Disabled ]
+                guacIngestionMessage:
+                  type: string
+                guacIngestionCompletedAt:
+                  type: string
       subresources:
         status: {}
       additionalPrinterColumns:
@@ -161,3 +173,6 @@ spec:
         - name: Image
           type: string
           jsonPath: .spec.image
+        - name: GUAC
+          type: string
+          jsonPath: .status.guacIngestionStatus

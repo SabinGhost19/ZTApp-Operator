@@ -14,12 +14,40 @@ spec:
         app: zta-operator
     spec:
       serviceAccountName: zta-operator
+      volumes:
+        - name: admission-tls
+          secret:
+            secretName: zta-admission-tls
+            optional: true
       containers:
+        - name: webhook
+          image: ghcr.io/sabinghost19/zta-operator:v0.1.0
+          imagePullPolicy: IfNotPresent
+          command: [ "python", "-m", "zta_operator.webhook" ]
+          ports:
+            - name: https
+              containerPort: 8443
+          volumeMounts:
+            - name: admission-tls
+              mountPath: /tls
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "10m", memory: "64Mi" }
+            limits:   { cpu: "200m", memory: "256Mi" }
         - name: operator
           image: ghcr.io/sabinghost19/zta-operator:v0.1.0
           imagePullPolicy: IfNotPresent
           command: [ "kopf", "run", "--all-namespaces", "-m", "zta_operator.operator" ]
           env:
+            - name: GUAC_GRAPHQL_URL
+              value: ""
             - name: LOG_LEVEL
               value: INFO
             - name: TALON_NAMESPACE

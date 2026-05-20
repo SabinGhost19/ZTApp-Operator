@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: zta-admission
+  namespace: devsecops-system
+  labels:
+    app: zta-operator
+    component: admission-webhook
+spec:
+  type: ClusterIP
+  selector:
+    app: zta-operator
+  ports:
+    - name: https
+      port: 443
+      targetPort: 8443
+      protocol: TCP

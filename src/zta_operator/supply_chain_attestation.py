@@ -277,19 +277,75 @@ def _validate_manifest_hash(
     spec: dict[str, Any],
     strict_manifest_hash: dict[str, Any],
     expected_hash: str,
-) -> tuple[list[str], str]:
-    violations: list[str] = []
+) -> tuple[list[str], list[str], str]:
+    """Returns (deny_violations, alert_violations, computed_hash).
+
+    When strictManifestHash.enforcementAction == "Alert", manifest hash
+    mismatches surface as alert_violations (audit mode) instead of
+    deny_violations (blocking). Default enforcement remains "Deny".
+    """
+    deny: list[str] = []
+    alert: list[str] = []
     if not bool(strict_manifest_hash.get("enabled", False)):
-        return violations, ""
+        return deny, alert, ""
+
+    enforcement = str(strict_manifest_hash.get("enforcementAction", "Deny") or "Deny").strip()
 
     if not expected_hash:
-        return ["strictManifestHash enabled but attested expected_infra_hash is missing"], ""
+        msg = "strictManifestHash enabled but attested expected_infra_hash is missing"
+        if enforcement.lower() == "alert":
+            alert.append(msg)
+        else:
+            deny.append(msg)
+        return deny, alert, ""
 
     computed_hash = _hash_spec_payload(spec)
     if _normalize_sha256(computed_hash) != _normalize_sha256(expected_hash):
-        violations.append("manifest spec hash mismatch against expected_infra_hash")
+        msg = "manifest spec hash mismatch against expected_infra_hash"
+        if enforcement.lower() == "alert":
+            alert.append(msg)
+        else:
+            deny.append(msg)
 
-    return violations, computed_hash
+    return deny, alert, computed_hash
+
+
+def _emit_warning_event(
+    api_client: client.ApiClient,
+    namespace: str,
+    app_name: str,
+    reason: str,
+    message: str,
+) -> None:
+    """Emit a K8s Warning Event on the ZTA object so `kubectl describe` surfaces it."""
+    try:
+        events_api = client.EventsV1Api(api_client)
+        now = datetime.now(timezone.utc)
+        event = client.EventsV1Event(
+            metadata=client.V1ObjectMeta(
+                generate_name=f"{app_name}-",
+                namespace=namespace,
+            ),
+            event_time=now,
+            reporting_controller="zta-operator",
+            reporting_instance="zta-operator",
+            action="Audit",
+            reason=reason,
+            note=message[:1024],
+            type="Warning",
+            regarding=client.V1ObjectReference(
+                api_version=f"{GROUP}/{VERSION}",
+                kind="ZeroTrustApplication",
+                name=app_name,
+                namespace=namespace,
+            ),
+        )
+        events_api.create_namespaced_event(namespace=namespace, body=event)
+    except Exception as exc:  # event emission is best-effort
+        logger.warning(
+            "Failed to emit K8s warning event",
+            extra={"event": "audit-event-emit-failed", "reason": reason, "error": str(exc)},
+        )
 
 
 def _security_policy_ref_name(spec: dict[str, Any] | None) -> str:
@@ -545,6 +601,7 @@ async def validate_admission_with_attestations(
 
     sbom_packages: list[dict[str, str]] = []
     sbom_digest = ""
+    sbom_predicate: dict[str, Any] = {}
     policy_predicate: dict[str, Any] = {}
     policy_digest = ""
     expected_infra_hash = ""
@@ -600,10 +657,11 @@ async def validate_admission_with_attestations(
         )
 
     violations: list[str] = []
+    alerts: list[str] = []
     violations.extend(_validate_sbom_against_policy(sbom_packages, sbom_policy))
     if policy_predicate:
         violations.extend(_validate_spec_against_policy(spec, policy_predicate))
-    hash_violations, computed_infra_hash = _validate_manifest_hash(
+    deny_hash, alert_hash, computed_infra_hash = _validate_manifest_hash(
         spec=spec,
         strict_manifest_hash=strict_manifest_hash,
         expected_hash=expected_infra_hash,
@@ -617,16 +675,85 @@ async def validate_admission_with_attestations(
             "strict_manifest_hash_enabled": bool(strict_manifest_hash.get("enabled", False)),
             "expected_infra_hash": expected_infra_hash,
             "computed_infra_hash": computed_infra_hash,
-            "hash_violations_count": len(hash_violations),
+            "hash_violations_count": len(deny_hash),
+            "hash_alerts_count": len(alert_hash),
         },
     )
-    violations.extend(hash_violations)
+    violations.extend(deny_hash)
+    alerts.extend(alert_hash)
+
+    custom_rules = global_spec.get("customRules", []) or []
+    if custom_rules:
+        try:
+            from .cel_eval import evaluate_custom_rules
+
+            voucher_ctx: dict[str, Any] = {}
+            vex_ctx: list[dict[str, Any]] = []
+            try:
+                zta_obj = custom.get_namespaced_custom_object(
+                    group=GROUP, version=VERSION, namespace=namespace, plural=PLURAL, name=app_name,
+                )
+                zta_status = (zta_obj.get("status", {}) or {})
+                voucher_ctx = (zta_status.get("provenance", {}) or {}).get("voucher", {}) or {}
+                vex_ctx = (zta_status.get("attestations", {}) or {}).get("vexStatements", []) or []
+            except ApiException:
+                pass
+
+            cel_ctx = {
+                "voucher": voucher_ctx,
+                "image": resolved_image,
+                "zta": spec,
+                "vex": vex_ctx,
+                "sbom": sbom_predicate,
+            }
+            cel_result = evaluate_custom_rules(custom_rules, cel_ctx)
+            if cel_result.errors:
+                logger.warning(
+                    "CEL evaluation produced errors",
+                    extra={"event": "cel-eval-errors", "errors": cel_result.errors},
+                )
+            violations.extend(cel_result.deny)
+            for alert_msg in cel_result.alert:
+                alerts.append(alert_msg)
+                _emit_warning_event(
+                    api_client=api_client,
+                    namespace=namespace,
+                    app_name=app_name,
+                    reason="CelRuleAlert",
+                    message=alert_msg,
+                )
+        except Exception as exc:
+            logger.warning(
+                "CEL evaluation skipped due to unexpected error",
+                extra={"event": "cel-eval-skipped", "error": str(exc)},
+            )
 
     if violations:
         raise SupplyChainPolicyError("; ".join(violations))
 
+    security_state = "Compliant"
+    if alerts:
+        security_state = "Alert"
+        for msg in alerts:
+            _emit_warning_event(
+                api_client=api_client,
+                namespace=namespace,
+                app_name=app_name,
+                reason="ManifestHashDrift",
+                message=msg,
+            )
+            logger.warning(
+                "Audit-mode policy violation",
+                extra={
+                    "event": "attestation-audit-mode",
+                    "zta_name": app_name,
+                    "zta_namespace": namespace,
+                    "violation": msg,
+                },
+            )
+
     return {
-        "securityState": "Compliant",
+        "securityState": security_state,
         "attestations": {
             "policyName": str((matched_policy.get("metadata", {}) or {}).get("name", "")),
             "resolvedImage": resolved_image,
@@ -637,7 +764,7 @@ async def validate_admission_with_attestations(
             "expectedInfraHash": expected_infra_hash,
             "computedInfraHash": computed_infra_hash,
         },
-        "activeViolations": [],
+        "activeViolations": alerts,
         "lastVerified": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -673,12 +800,15 @@ def check_runtime_drift(
         return True, [], sanction
 
     violations = _validate_spec_against_policy(current_spec, saved_policy)
-    hash_violations, _ = _validate_manifest_hash(
+    deny_hash, alert_hash, _ = _validate_manifest_hash(
         spec=current_spec,
         strict_manifest_hash=strict_manifest_hash,
         expected_hash=expected_infra_hash,
     )
-    violations.extend(hash_violations)
+    violations.extend(deny_hash)
+    # alert_hash is non-blocking by design: at runtime, an Alert-mode hash
+    # mismatch must not trigger Isolate/Kill sanctions. It is surfaced via
+    # the periodic reconcile event emission upstream.
     return (len(violations) == 0), violations, sanction
 
 
@@ -717,12 +847,12 @@ def reevaluate_policy_targets(api_client: client.ApiClient, policy: dict[str, An
             violations.extend(_validate_spec_against_policy(spec_app, saved_policy))
 
         saved_expected_hash = str(attestations.get("expectedInfraHash", "")).strip()
-        hash_violations, _ = _validate_manifest_hash(
+        deny_hash, _alert_hash, _ = _validate_manifest_hash(
             spec=spec_app,
             strict_manifest_hash=strict_manifest_hash,
             expected_hash=saved_expected_hash,
         )
-        violations.extend(hash_violations)
+        violations.extend(deny_hash)
 
         results.append(
             {

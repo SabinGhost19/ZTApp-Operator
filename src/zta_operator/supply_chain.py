@@ -98,7 +98,12 @@ def _has_fixable_vulnerabilities(payload: dict[str, Any]) -> bool:
     return False
 
 
-async def verify_trivy_threshold(image: str, max_vulnerabilities: str, fail_on_fixable: bool = False) -> VerificationResult:
+async def verify_trivy_threshold(
+    image: str,
+    max_vulnerabilities: str,
+    fail_on_fixable: bool = False,
+    vex_statements: list | None = None,
+) -> VerificationResult:
     threshold = str(max_vulnerabilities).upper()
     if threshold not in SEVERITY_ORDER:
         raise SupplyChainError(f"Invalid maxVulnerabilities: {max_vulnerabilities}")
@@ -117,6 +122,12 @@ async def verify_trivy_threshold(image: str, max_vulnerabilities: str, fail_on_f
     except json.JSONDecodeError as exc:
         raise SupplyChainError("Trivy output is not valid JSON.") from exc
 
+    exempted_cves: list[str] = []
+    if vex_statements:
+        from .vex import filter_trivy_vulnerabilities
+
+        payload, exempted_cves = filter_trivy_vulnerabilities(payload, vex_statements)
+
     highest = _max_found_severity(payload)
     if fail_on_fixable and _has_fixable_vulnerabilities(payload):
         return VerificationResult(
@@ -126,19 +137,28 @@ async def verify_trivy_threshold(image: str, max_vulnerabilities: str, fail_on_f
         )
 
     if highest is None:
-        return VerificationResult(success=True, reason="ok", details={"highest": "NONE", "threshold": threshold})
+        return VerificationResult(
+            success=True,
+            reason="ok",
+            details={"highest": "NONE", "threshold": threshold, "vexExempted": exempted_cves},
+        )
 
     if SEVERITY_ORDER[highest] > SEVERITY_ORDER[threshold]:
         return VerificationResult(
             success=False,
             reason="trivy-threshold-exceeded",
-            details={"highest": highest, "threshold": threshold},
+            details={"highest": highest, "threshold": threshold, "vexExempted": exempted_cves},
         )
 
     return VerificationResult(
         success=True,
         reason="ok",
-        details={"highest": highest, "threshold": threshold, "failOnFixable": fail_on_fixable},
+        details={
+            "highest": highest,
+            "threshold": threshold,
+            "failOnFixable": fail_on_fixable,
+            "vexExempted": exempted_cves,
+        },
     )
 
 
@@ -148,6 +168,7 @@ async def verify_supply_chain(
     trusted_identities: list[str],
     max_vulnerabilities: str,
     fail_on_fixable: bool = False,
+    vex_statements: list | None = None,
 ) -> VerificationResult:
     validate_image_reference(image)
 
@@ -165,8 +186,19 @@ async def verify_supply_chain(
         if not last_result or not last_result.success:
             return last_result or VerificationResult(success=False, reason="cosign-verification-failed", details={})
 
+    if vex_statements is None:
+        identities = [identity for identity in trusted_identities if str(identity).strip()]
+        if identities:
+            try:
+                from .vex import fetch_vex_statements
+
+                vex_statements = await fetch_vex_statements(image=image, trusted_issuers=identities)
+            except Exception:
+                vex_statements = []
+
     return await verify_trivy_threshold(
         image=image,
         max_vulnerabilities=max_vulnerabilities,
         fail_on_fixable=fail_on_fixable,
+        vex_statements=vex_statements,
     )

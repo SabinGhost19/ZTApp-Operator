@@ -1,0 +1,24 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: zta-admission-webhook
+  annotations:
+    cert-manager.io/inject-ca-from: devsecops-system/zta-admission-tls
+webhooks:
+  - name: validate.zta.devsecops.licenta.ro
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    timeoutSeconds: 5
+    failurePolicy: Fail
+    clientConfig:
+      service:
+        name: zta-admission
+        namespace: devsecops-system
+        path: /validate
+        port: 443
+    rules:
+      - apiGroups: ["devsecops.licenta.ro"]
+        apiVersions: ["v1"]
+        resources: ["zerotrustapplications"]
+        operations: ["CREATE", "UPDATE"]
+        scope: Namespaced

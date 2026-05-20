@@ -1,0 +1,27 @@
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: zta-admission-selfsigned
+  namespace: devsecops-system
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: zta-admission-tls
+  namespace: devsecops-system
+spec:
+  secretName: zta-admission-tls
+  duration: 8760h
+  renewBefore: 720h
+  issuerRef:
+    name: zta-admission-selfsigned
+    kind: Issuer
+  commonName: zta-admission.devsecops-system.svc
+  dnsNames:
+    - zta-admission
+    - zta-admission.devsecops-system
+    - zta-admission.devsecops-system.svc
+    - zta-admission.devsecops-system.svc.cluster.local

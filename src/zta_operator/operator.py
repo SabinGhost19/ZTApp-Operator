@@ -503,6 +503,7 @@ async def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, pat
             upsert_talon_rule(core=core, app_namespace=namespace, app_name=name, falco_rule_name=falco_rule_name)
             adapter.info("Patched Talon rules ConfigMap", extra={"event": "talon-configmap-upsert"})
 
+
         _status_patch(
             custom,
             namespace,
@@ -528,6 +529,45 @@ async def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, pat
         # status.specReconcileHash and the loop would never break).
         _write_spec_hash_annotation(custom, namespace, name, spec_hash)
         adapter.info("Reconciliation completed", extra={"event": "reconcile-success", "phase": "Running", "spec_hash": spec_hash[:16]})
+
+        # Asynchronous GUAC ingestion — decoupled from the reconcile loop
+        # so a slow OCI pull / GUAC collector roundtrip never delays Pod
+        # creation. The worker thread PATCHes status.guacIngestionStatus
+        # to Completed/Failed when finished; the UI surfaces this as a
+        # spinner that resolves to a checkmark.
+        try:
+            from .guac_client import trigger_guac_ingestion
+
+            started = trigger_guac_ingestion(image=image, namespace=namespace, app_name=name)
+            if started:
+                _status_patch(
+                    custom,
+                    namespace,
+                    name,
+                    {
+                        "guacIngestionStatus": "InProgress",
+                        "guacIngestionMessage": "Pulling SBOM/VEX from OCI and ingesting into GUAC knowledge graph...",
+                    },
+                )
+                adapter.info(
+                    "GUAC ingestion worker started (async)",
+                    extra={"event": "guac-worker-started", "image": image},
+                )
+            else:
+                _status_patch(
+                    custom,
+                    namespace,
+                    name,
+                    {
+                        "guacIngestionStatus": "Disabled",
+                        "guacIngestionMessage": "GUAC_GRAPHQL_URL is not configured for this operator.",
+                    },
+                )
+        except Exception as exc:
+            adapter.info(
+                "GUAC ingest skipped",
+                extra={"event": "guac-ingest-skipped", "error": str(exc)},
+            )
 
     except SupplyChainPolicyMissingError as exc:
         # Declarative recovery: SCA may be applied after ZTA (Helm/ArgoCD
