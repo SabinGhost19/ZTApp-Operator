@@ -22,6 +22,20 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# celpy ships with very chatty internal loggers that emit one INFO line per
+# AST node visited. On non-trivial CEL expressions this floods the operator
+# logs with thousands of "Tree(...)", "Evaluator", "NameContainer" lines per
+# reconcile, drowning out real events. Silence them at import time.
+for _noisy in (
+    "celpy",
+    "celpy.evaluation",
+    "Evaluator",
+    "NameContainer",
+    "Environment",
+    "evaluation",
+):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
 
 @dataclass
 class CelEvalResult:

@@ -53,17 +53,18 @@ def _endpoint() -> str:
 
 
 def _collector_endpoint() -> str:
-    """GUAC's REST collector accepts raw SBOM / VEX documents.
+    """GUAC raw-document ingestion endpoint (optional).
 
-    In the official chart this is a separate Service `rest-api` on :8081
-    (NOT the graphql-server). Two ways to point at it:
-      1. Set GUAC_COLLECTOR_URL explicitly (recommended).
-      2. Let us derive from the chart convention.
+    Stock GUAC (v1.x) does NOT expose an HTTP collector — the `rest-api`
+    service only serves `/healthz`. Real ingestion flows through NATS
+    (`DOCUMENTS.collected`) or the collectsub gRPC API, both of which
+    `oci-collector` already consumes for any image visible to the registry.
+
+    So this function returns "" by default, which makes `_push_to_collector`
+    a no-op. Set `GUAC_COLLECTOR_URL` only if you have a custom HTTP shim
+    in front of GUAC that accepts `{format, document}` payloads.
     """
-    explicit = str(os.environ.get("GUAC_COLLECTOR_URL", "")).strip()
-    if explicit:
-        return explicit
-    return "http://rest-api.guac.svc.cluster.local:8081/v0/collect"
+    return str(os.environ.get("GUAC_COLLECTOR_URL", "")).strip()
 
 
 def _cosign_download_attestation(image: str, predicate_type: str) -> dict | None:
@@ -119,6 +120,8 @@ def _cosign_download_attestation(image: str, predicate_type: str) -> dict | None
 def _push_to_collector(payload: dict, document_format: str) -> bool:
     url = _collector_endpoint()
     if not url:
+        # No custom collector configured — rely on oci-collector to discover
+        # SBOM/VEX attestations directly from the registry.
         return False
     try:
         import httpx
@@ -136,9 +139,19 @@ def _push_to_collector(payload: dict, document_format: str) -> bool:
                 content=json.dumps({"format": document_format, "document": payload}),
                 headers={"Content-Type": "application/json"},
             )
-            return response.status_code < 300
+            if response.status_code >= 300:
+                logger.warning(
+                    "GUAC collector push rejected",
+                    extra={
+                        "event": "guac-collector-rejected",
+                        "status": response.status_code,
+                        "body": response.text[:200],
+                    },
+                )
+                return False
+            return True
     except Exception as exc:
-        logger.info(
+        logger.warning(
             "GUAC collector push failed",
             extra={"event": "guac-collector-failed", "error": str(exc)},
         )
@@ -233,10 +246,43 @@ def _ingest_worker(image: str, namespace: str, app_name: str) -> None:
         )
 
 
+def _split_oci_reference(image: str) -> tuple[str, str, str]:
+    """Split an OCI reference into (registry, repo, version) for GUAC purl-style ingest.
+
+    Examples:
+      ghcr.io/sabinghost19/demo-fastapi@sha256:abc...
+        -> ("ghcr.io", "sabinghost19/demo-fastapi", "sha256:abc...")
+      docker.io/library/nginx:1.25
+        -> ("docker.io", "library/nginx", "1.25")
+    """
+    ref = image.strip()
+    version = ""
+    if "@" in ref:
+        ref, version = ref.rsplit("@", 1)
+    elif ":" in ref.rsplit("/", 1)[-1]:
+        head, tag = ref.rsplit(":", 1)
+        ref, version = head, tag
+
+    if "/" in ref:
+        registry, repo = ref.split("/", 1)
+        if "." not in registry and ":" not in registry and registry != "localhost":
+            # No dot => not a registry hostname; treat the whole thing as a repo
+            # under docker.io (matches Docker's parsing rules).
+            registry, repo = "docker.io", ref
+    else:
+        registry, repo = "docker.io", ref
+    return registry, repo, version
+
+
 def _emit_deployment_edge(image: str, namespace: str, app_name: str) -> bool:
     """GraphQL mutation that links the OCI image to the K8s deployment.
     This is the cluster-side contribution to GUAC: GUAC alone never sees
     where an image actually runs.
+
+    Schema (GUAC v1.x): `ingestHasSourceAt` takes `IDorPkgInput`/`IDorSourceInput`
+    wrappers, requires `pkgMatchType`, and `HasSourceAtInputSpec.documentRef`
+    is non-nullable. The earlier signature predates the `IDorXxxInput` change
+    and was returning 422.
     """
     url = _endpoint()
     if not url:
@@ -246,29 +292,98 @@ def _emit_deployment_edge(image: str, namespace: str, app_name: str) -> bool:
     except ImportError:
         return False
 
-    mutation = """
-    mutation IngestHasSourceAt($image: String!, $location: String!, $time: Time!) {
-      ingestHasSourceAt(
-        pkg: { type: "oci", name: $image, version: "" }
-        source: { type: "k8s", namespace: "deployment", name: $location, tag: "" }
-        hasSourceAt: { knownSince: $time, justification: "deployed by zta-operator", origin: "zta-operator", collector: "zta-operator" }
-      ) { id }
+    registry, repo, version = _split_oci_reference(image)
+
+    pkg_input: dict[str, Any] = {
+        "packageInput": {
+            "type": "oci",
+            "namespace": registry,
+            "name": repo,
+            "version": version,
+            "qualifiers": [],
+            "subpath": "",
+        }
     }
-    """
-    variables = {
-        "image": image,
-        "location": f"{namespace}/{app_name}",
-        "time": datetime.now(timezone.utc).isoformat(),
+    source_input: dict[str, Any] = {
+        "sourceInput": {
+            "type": "k8s",
+            "namespace": "deployment",
+            "name": f"{namespace}/{app_name}",
+            "tag": "",
+        }
     }
+    has_source_at_input = {
+        "knownSince": datetime.now(timezone.utc).isoformat(),
+        "justification": "deployed by zta-operator",
+        "origin": "zta-operator",
+        "collector": "zta-operator",
+        "documentRef": "",
+    }
+
+    # GUAC graph nodes must exist before edges can reference them, so we
+    # ingest the package and source first (both are idempotent — repeat
+    # calls just return the existing IDs).
+    steps = [
+        (
+            "ingestPackage",
+            "mutation($pkg: IDorPkgInput!) { ingestPackage(pkg: $pkg) { packageVersionID } }",
+            {"pkg": pkg_input},
+        ),
+        (
+            "ingestSource",
+            "mutation($source: IDorSourceInput!) { ingestSource(source: $source) { sourceNameID } }",
+            {"source": source_input},
+        ),
+        (
+            "ingestHasSourceAt",
+            "mutation($pkg: IDorPkgInput!, $mt: MatchFlags!, $src: IDorSourceInput!, $hsa: HasSourceAtInputSpec!) {"
+            " ingestHasSourceAt(pkg: $pkg, pkgMatchType: $mt, source: $src, hasSourceAt: $hsa)"
+            " }",
+            {
+                "pkg": pkg_input,
+                "mt": {"pkg": "SPECIFIC_VERSION"},
+                "src": source_input,
+                "hsa": has_source_at_input,
+            },
+        ),
+    ]
+
     try:
         with httpx.Client(timeout=5.0) as http:
-            response = http.post(
-                url,
-                content=json.dumps({"query": mutation, "variables": variables}),
-                headers={"Content-Type": "application/json"},
-            )
-            return response.status_code < 300
-    except Exception:
+            for op, query, variables in steps:
+                response = http.post(
+                    url,
+                    content=json.dumps({"query": query, "variables": variables}),
+                    headers={"Content-Type": "application/json"},
+                )
+                if response.status_code >= 300:
+                    logger.warning(
+                        "GUAC graphql HTTP error",
+                        extra={
+                            "event": "guac-graphql-rejected",
+                            "operation": op,
+                            "status": response.status_code,
+                            "body": response.text[:300],
+                        },
+                    )
+                    return False
+                body = response.json()
+                if body.get("errors"):
+                    logger.warning(
+                        "GUAC graphql returned errors",
+                        extra={
+                            "event": "guac-graphql-errors",
+                            "operation": op,
+                            "errors": str(body["errors"])[:300],
+                        },
+                    )
+                    return False
+        return True
+    except Exception as exc:
+        logger.warning(
+            "GUAC graphql request failed",
+            extra={"event": "guac-graphql-failed", "error": str(exc)[:200]},
+        )
         return False
 
 
