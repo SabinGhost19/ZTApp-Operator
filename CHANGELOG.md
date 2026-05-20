@@ -1,3 +1,11 @@
+## [1.5.2](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.5.1...v1.5.2) (2026-05-20)
+
+
+### Bug Fixes
+
+* **guac:** align default service URLs with the official guacsec/guac chart ([deeb3d6](https://github.com/SabinGhost19/ZTApp-Operator/commit/deeb3d6b48a23691301e0a224a7e8cc648eff2e3))
+* **operators:** isolate kopf progress/diffbase storage per operator ([e41cca5](https://github.com/SabinGhost19/ZTApp-Operator/commit/e41cca5fa9762150905e56c525cfc23676f28c13))
+
 ## [1.5.1](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.5.0...v1.5.1) (2026-05-20)
 
 
