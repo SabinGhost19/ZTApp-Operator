@@ -18,6 +18,12 @@ operator:
   talonNamespace: falco-talon
   talonConfigMapName: falco-talon-rules
   talonConfigMapKey: rules.yaml
+  # GUAC ingestion endpoints (official guacsec/guac Helm chart conventions).
+  # Set graphqlUrl to "" to disable GUAC integration entirely; the operator
+  # then skips the async worker and PATCHes status.guacIngestionStatus=Disabled.
+  guac:
+    graphqlUrl: http://graphql-server.guac.svc.cluster.local:8080/query
+    collectorUrl: http://rest-api.guac.svc.cluster.local:8081/v0/collect
   ingress:
     className: nginx
     path: /

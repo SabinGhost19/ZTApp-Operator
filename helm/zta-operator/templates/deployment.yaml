@@ -54,6 +54,10 @@ spec:
               value: {{ .Values.operator.ingress.oauth2ServicePort | quote }}
             - name: OAUTH2_INGRESS_PATH
               value: {{ .Values.operator.ingress.oauth2IngressPath | quote }}
+            - name: GUAC_GRAPHQL_URL
+              value: {{ .Values.operator.guac.graphqlUrl | quote }}
+            - name: GUAC_COLLECTOR_URL
+              value: {{ .Values.operator.guac.collectorUrl | quote }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}
