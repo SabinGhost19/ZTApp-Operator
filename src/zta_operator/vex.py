@@ -48,13 +48,17 @@ async def fetch_vex_statements(
     Returns an empty list if no VEX is attached (best-effort: VEX is opt-in).
     """
     last_error = ""
+    # Use the full OpenVEX predicate-type URI — cosign does not accept a
+    # `vex` shorthand and refuses to sign/verify with `invalid predicate
+    # type: vex`. Must match the type emitted by the CI/CD workflow's
+    # `cosign attest --type https://openvex.dev/ns/v0.2.0`.
     for identity in trusted_issuers:
         cmd = [
             COSIGN_BIN,
             "verify-attestation",
             image,
             "--type",
-            "vex",
+            "https://openvex.dev/ns/v0.2.0",
             "--certificate-identity",
             identity,
             "--certificate-oidc-issuer",

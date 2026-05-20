@@ -41,21 +41,29 @@ logger = logging.getLogger("zta_operator.guac_client")
 
 
 def _endpoint() -> str:
-    return str(os.environ.get("GUAC_GRAPHQL_URL", "")).strip()
+    # Default tracks the official `guacsec/guac` Helm chart service names:
+    #   Service/graphql-server   :8080   exposes /query
+    # Override per-cluster via GUAC_GRAPHQL_URL.
+    return str(
+        os.environ.get(
+            "GUAC_GRAPHQL_URL",
+            "http://graphql-server.guac.svc.cluster.local:8080/query",
+        )
+    ).strip()
 
 
 def _collector_endpoint() -> str:
-    """GUAC's REST-style ingest endpoint accepts raw SBOM / VEX documents.
-    Convention: if GUAC_GRAPHQL_URL ends with `/query`, swap to `/v0/collect`;
-    otherwise honour an explicit `GUAC_COLLECTOR_URL` env var.
+    """GUAC's REST collector accepts raw SBOM / VEX documents.
+
+    In the official chart this is a separate Service `rest-api` on :8081
+    (NOT the graphql-server). Two ways to point at it:
+      1. Set GUAC_COLLECTOR_URL explicitly (recommended).
+      2. Let us derive from the chart convention.
     """
     explicit = str(os.environ.get("GUAC_COLLECTOR_URL", "")).strip()
     if explicit:
         return explicit
-    graphql = _endpoint()
-    if graphql.endswith("/query"):
-        return graphql[: -len("/query")] + "/v0/collect"
-    return graphql
+    return "http://rest-api.guac.svc.cluster.local:8081/v0/collect"
 
 
 def _cosign_download_attestation(image: str, predicate_type: str) -> dict | None:
