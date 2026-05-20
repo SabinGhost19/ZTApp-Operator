@@ -132,7 +132,20 @@ def _write_spec_hash_annotation(
 
 
 @kopf.on.startup()
-def startup_fn(**_: Any) -> None:
+def configure(settings: kopf.OperatorSettings, **_: Any) -> None:
+    # Isolate kopf bookkeeping from other operators (e.g. provenance-enforcer)
+    # that reconcile the same ZeroTrustApplication CR. Without distinct
+    # prefixes, the default StatusProgressStorage + last-handled annotation
+    # collide, producing "Patching failed with inconsistencies" and a
+    # self-feeding reconcile loop on status.trustLevel.
+    settings.persistence.finalizer = "zta-operator.devsecops.licenta.ro/finalizer"
+    settings.persistence.progress_storage = kopf.AnnotationsProgressStorage(
+        prefix="zta-operator.devsecops.licenta.ro",
+    )
+    settings.persistence.diffbase_storage = kopf.AnnotationsDiffBaseStorage(
+        prefix="zta-operator.devsecops.licenta.ro",
+        key="last-handled-configuration",
+    )
     try:
         config.load_incluster_config()
     except Exception:
