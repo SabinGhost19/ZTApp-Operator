@@ -1,3 +1,10 @@
+# [1.5.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.4.2...v1.5.0) (2026-05-20)
+
+
+### Features
+
+* **supply-chain:** RFC 6962 Merkle + Audit-mode + webhook + CEL + VEX + KubeArmor + GUAC ([dfcdd0f](https://github.com/SabinGhost19/ZTApp-Operator/commit/dfcdd0f8ce5858189766e2a38ebe6f28bba2b82e))
+
 ## [1.4.2](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.4.1...v1.4.2) (2026-05-12)
 
 
