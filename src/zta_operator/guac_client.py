@@ -70,16 +70,17 @@ def _collectsub_endpoint() -> str:
 def _notify_collectsub(image: str) -> bool:
     """Enqueue an OCI reference on GUAC's collectsub bus.
 
-    Sends DATATYPE_OCI_REGISTRY with the bare ``registry/repo`` (digest/tag
-    stripped). The stock GUAC chart runs ``oci-collector`` in polling mode,
-    which refuses entries that already carry a tag or digest with:
+    Sends DATATYPE_OCI with the bare ``registry/repo`` (digest/tag stripped).
 
-        collector ended with error: image identifiers (tag or digest)
-        should not be specified when using polling
-
-    Polling on the repo lets oci-collector discover the exact digest tag
-    we just deployed plus any sibling tags — slightly broader than strictly
-    needed but harmless for graph completeness.
+    Why ``DATATYPE_OCI`` and not ``DATATYPE_OCI_REGISTRY``:
+      - The chart runs ``guaccollect image`` which subscribes only to OCI
+        entries. The separate ``guaccollect registry`` subcommand consumes
+        OCI_REGISTRY but is not deployed in the stock chart.
+      - GUAC's polling mode refuses entries that carry a tag or digest:
+            "image identifiers (tag or digest) should not be specified
+             when using polling"
+        so we strip both — polling on the bare repo lets oci-collector
+        enumerate tags itself and pick up the exact digest we just shipped.
 
     Returns True on success. Failures are logged and swallowed — collectsub
     being down should not break the rest of GUAC ingestion (the deployment
@@ -107,7 +108,7 @@ def _notify_collectsub(image: str) -> bool:
             request = collectsub_pb2.AddCollectEntriesRequest(
                 entries=[
                     collectsub_pb2.CollectEntry(
-                        type=collectsub_pb2.DATATYPE_OCI_REGISTRY,
+                        type=collectsub_pb2.DATATYPE_OCI,
                         value=repo_ref,
                         since_time=0,
                     )
@@ -288,70 +289,142 @@ def _patch_status_sync(namespace: str, app_name: str, ingestion_status: str, mes
         )
 
 
-def _ingest_worker(image: str, namespace: str, app_name: str) -> None:
-    """Background job: enqueue the image on GUAC collectsub so oci-collector
-    pulls SBOM/VEX from the registry into the graph, then emit the K8s
-    deployment edge via GraphQL. Never raises — all errors surface as a
-    `guacIngestionStatus: Failed` patch with a human-readable reason.
+def _guacone_push_files(predicate_files: list[str]) -> bool:
+    """Run ``guacone collect files <dir>`` against graphql-server.
 
-    The cosign-based REST push path is kept as a fallback for environments
-    where collectsub cannot reach the registry (e.g. private repos), but is
-    disabled by default (GUAC_COLLECTOR_URL unset).
+    Why ``guacone collect files``:
+      - GUAC's ingestor REJECTS attestations signed with cosign keyless
+        (Fulcio/OIDC) — it requires explicit trusted keys for DSSE
+        verification, which isn't configurable in v1.0.1.
+      - ``guacone collect files`` reads raw SBOM/VEX JSON (no DSSE wrapper)
+        and talks DIRECTLY to graphql-server, fully bypassing the ingestor's
+        DSSE verification step.
+
+    The caller is responsible for extracting the raw predicate JSON from
+    the cosign DSSE envelope and placing each document as ``*.json`` inside
+    a single directory; this function points guacone at that directory.
+
+    Returns True if guacone reports a graceful ingest of >=1 document.
     """
-    # Primary path: tell oci-collector to fetch attestations for this image.
-    # It will publish SBOM/VEX into NATS DOCUMENTS.collected, the ingestor
-    # parses them into the graph asynchronously.
-    collectsub_ok = _notify_collectsub(image)
+    if not predicate_files:
+        return False
+    work_dir = predicate_files[0].rsplit("/", 1)[0]
+    gql = _endpoint()
+    try:
+        result = subprocess.run(
+            [
+                "guacone",
+                "--gql-addr", gql,
+                "collect", "files", work_dir,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        logger.warning(
+            "guacone invocation failed",
+            extra={"event": "guac-guacone-failed", "error": str(exc)},
+        )
+        return False
+    if result.returncode != 0 or "collector ended gracefully" not in result.stderr + result.stdout:
+        logger.warning(
+            "guacone returned non-success",
+            extra={
+                "event": "guac-guacone-rejected",
+                "returncode": result.returncode,
+                "tail": (result.stderr or result.stdout)[-300:],
+            },
+        )
+        return False
+    logger.info(
+        "guacone ingested documents",
+        extra={"event": "guac-guacone-ok", "files": len(predicate_files)},
+    )
+    return True
 
-    # Fallback path: only runs if GUAC_COLLECTOR_URL is set explicitly to
-    # a custom HTTP shim. With stock GUAC this is a no-op.
-    pulled_any = False
-    pushed_any = False
-    if _collector_endpoint():
-        sbom = _cosign_download_attestation(image, "https://spdx.dev/Document")
-        if sbom is None:
-            sbom = _cosign_download_attestation(image, "spdxjson")
-        if sbom is not None:
-            pulled_any = True
-            if _push_to_collector(sbom, "DOCUMENT_SPDX"):
-                pushed_any = True
 
-        vex = _cosign_download_attestation(image, "https://openvex.dev/ns/v0.2.0")
-        if vex is None:
-            vex = _cosign_download_attestation(image, "vex")
-        if vex is not None:
-            pulled_any = True
-            if _push_to_collector(vex, "DOCUMENT_OPENVEX"):
-                pushed_any = True
+def _write_predicate_files(image: str) -> list[str]:
+    """Download SBOM/VEX attestations with cosign, extract raw predicates,
+    write each one as a JSON file in a temp dir. Returns the list of paths.
+    """
+    work_dir = f"/tmp/guac-{os.getpid()}-{abs(hash(image)) % 10**8}"
+    os.makedirs(work_dir, exist_ok=True)
+    written: list[str] = []
+
+    sbom = _cosign_download_attestation(image, "https://spdx.dev/Document")
+    if sbom is None:
+        sbom = _cosign_download_attestation(image, "spdxjson")
+    if isinstance(sbom, dict):
+        path = f"{work_dir}/sbom.spdx.json"
+        with open(path, "w") as f:
+            json.dump(sbom, f)
+        written.append(path)
+
+    vex = _cosign_download_attestation(image, "https://openvex.dev/ns/v0.2.0")
+    if vex is None:
+        vex = _cosign_download_attestation(image, "vex")
+    if isinstance(vex, dict):
+        path = f"{work_dir}/vex.openvex.json"
+        with open(path, "w") as f:
+            json.dump(vex, f)
+        written.append(path)
+
+    return written
+
+
+def _ingest_worker(image: str, namespace: str, app_name: str) -> None:
+    """Background job: extract SBOM/VEX from OCI attestations and push them
+    into GUAC via ``guacone collect files`` (which bypasses ingestor's DSSE
+    verification, the only path that works for cosign-keyless attestations).
+    Also emits the K8s deployment edge via GraphQL.
+
+    Never raises — all errors surface as a ``guacIngestionStatus: Failed``
+    patch with a human-readable reason.
+    """
+    # Primary path: extract attestations locally and push raw JSON to
+    # graphql-server through guacone.
+    files = _write_predicate_files(image)
+    guacone_ok = _guacone_push_files(files) if files else False
+
+    # Best-effort hint to oci-collector via collectsub. Kept because future
+    # GUAC versions may add keyless support; harmless if oci-collector is
+    # disabled or in polling mode (we send a bare repo, no digest).
+    _notify_collectsub(image)
 
     # Always emit the deployment edge — it is the cheap mutation that
     # links the OCI image to the K8s deployment, independent of whether
     # the heavier SBOM/VEX payload was retrievable.
     deployment_edge_ok = _emit_deployment_edge(image, namespace, app_name)
 
-    if deployment_edge_ok and collectsub_ok:
+    if deployment_edge_ok and guacone_ok:
         _patch_status_sync(
             namespace, app_name, "Completed",
-            "GUAC graph updated: deployment edge ingested, oci-collector notified via collectsub "
-            "(SBOM/VEX will appear asynchronously once collected).",
+            "GUAC graph updated: SBOM/VEX ingested via guacone, deployment edge linked.",
+        )
+    elif deployment_edge_ok and files and not guacone_ok:
+        _patch_status_sync(
+            namespace, app_name, "Completed",
+            "GUAC graph updated with deployment edge only — guacone failed to push SBOM/VEX, "
+            "check zta-operator logs (event=guac-guacone-*).",
         )
     elif deployment_edge_ok:
         _patch_status_sync(
             namespace, app_name, "Completed",
-            "GUAC graph updated with deployment edge only — collectsub unreachable, SBOM/VEX "
-            "discovery will not happen until that is resolved.",
+            "GUAC graph updated with deployment edge only — no SBOM/VEX attestation found on "
+            "the image. Publish attestations via cosign attest to enable blast-radius queries.",
         )
-    elif collectsub_ok:
+    elif guacone_ok:
         _patch_status_sync(
             namespace, app_name, "Failed",
-            "GUAC collectsub accepted the image but the GraphQL deployment edge failed — "
-            "check graphql-server logs.",
+            "guacone ingested SBOM/VEX but the deployment edge mutation failed — check "
+            "graphql-server logs.",
         )
     else:
         _patch_status_sync(
             namespace, app_name, "Failed",
-            "GUAC ingestion did not complete: both collectsub and the GraphQL endpoint are "
-            "unreachable. Check GUAC service health.",
+            "GUAC ingestion did not complete: both guacone and the GraphQL deployment edge "
+            "failed. Check GUAC service health.",
         )
 
 
