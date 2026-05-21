@@ -1,3 +1,10 @@
+# [1.7.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.6.1...v1.7.0) (2026-05-21)
+
+
+### Features
+
+* **zta-operator:** ingest SBOM/VEX via guacone to bypass DSSE verification ([532c345](https://github.com/SabinGhost19/ZTApp-Operator/commit/532c34556d0810ae30e4246b48b3bd37dd21b63c))
+
 ## [1.6.1](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.6.0...v1.6.1) (2026-05-21)
 
 
