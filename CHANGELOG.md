@@ -1,3 +1,10 @@
+# [1.6.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.5.3...v1.6.0) (2026-05-21)
+
+
+### Features
+
+* **guac:** expose visualizer and graphql via nginx ingress ([15088f8](https://github.com/SabinGhost19/ZTApp-Operator/commit/15088f8ca7dadbe999dad5312c7e9a458abcad6a))
+
 ## [1.5.3](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.5.2...v1.5.3) (2026-05-20)
 
 
