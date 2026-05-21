@@ -1,3 +1,10 @@
+## [1.6.1](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.6.0...v1.6.1) (2026-05-21)
+
+
+### Bug Fixes
+
+* **zta-operator:** send DATATYPE_OCI_REGISTRY instead of OCI digest to collectsub ([e25e5cf](https://github.com/SabinGhost19/ZTApp-Operator/commit/e25e5cf84e9814c44b4f5fd6979090b41c8fcc0b))
+
 # [1.6.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.5.3...v1.6.0) (2026-05-21)
 
 
