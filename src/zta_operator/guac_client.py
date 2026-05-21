@@ -52,6 +52,73 @@ def _endpoint() -> str:
     ).strip()
 
 
+def _collectsub_endpoint() -> str:
+    """gRPC endpoint for GUAC's CollectSubscriberService.
+
+    Stock chart exposes `collectsub:2782`. This is how `oci-collector` is
+    told which images to fetch attestations for — without an entry here,
+    oci-collector idles and no SBOM/VEX ever land in the graph.
+    """
+    return str(
+        os.environ.get(
+            "GUAC_COLLECTSUB_URL",
+            "collectsub.guac.svc.cluster.local:2782",
+        )
+    ).strip()
+
+
+def _notify_collectsub(image: str) -> bool:
+    """Enqueue an OCI reference on GUAC's collectsub bus.
+
+    Returns True on success. Failures are logged and swallowed — collectsub
+    being down should not break the rest of GUAC ingestion (the deployment
+    edge still lands via GraphQL).
+    """
+    addr = _collectsub_endpoint()
+    if not addr:
+        return False
+    try:
+        import grpc  # type: ignore
+        from ._grpc import collectsub_pb2, collectsub_pb2_grpc  # type: ignore
+    except ImportError as exc:
+        logger.info(
+            "collectsub gRPC stubs unavailable",
+            extra={"event": "guac-collectsub-skipped", "error": str(exc)},
+        )
+        return False
+
+    try:
+        with grpc.insecure_channel(addr) as channel:
+            stub = collectsub_pb2_grpc.CollectSubscriberServiceStub(channel)
+            request = collectsub_pb2.AddCollectEntriesRequest(
+                entries=[
+                    collectsub_pb2.CollectEntry(
+                        type=collectsub_pb2.DATATYPE_OCI,
+                        value=image,
+                        since_time=0,
+                    )
+                ]
+            )
+            response = stub.AddCollectEntries(request, timeout=5.0)
+            if not response.success:
+                logger.warning(
+                    "collectsub refused entry",
+                    extra={"event": "guac-collectsub-refused", "image": image},
+                )
+                return False
+            return True
+    except Exception as exc:
+        logger.warning(
+            "collectsub call failed",
+            extra={
+                "event": "guac-collectsub-failed",
+                "image": image,
+                "error": str(exc)[:200],
+            },
+        )
+        return False
+
+
 def _collector_endpoint() -> str:
     """GUAC raw-document ingestion endpoint (optional).
 
@@ -201,48 +268,69 @@ def _patch_status_sync(namespace: str, app_name: str, ingestion_status: str, mes
 
 
 def _ingest_worker(image: str, namespace: str, app_name: str) -> None:
-    """Background job: pull SBOM + VEX from OCI, push to GUAC collector,
-    finalize ZTA status. Never raises — all errors surface as a
+    """Background job: enqueue the image on GUAC collectsub so oci-collector
+    pulls SBOM/VEX from the registry into the graph, then emit the K8s
+    deployment edge via GraphQL. Never raises — all errors surface as a
     `guacIngestionStatus: Failed` patch with a human-readable reason.
+
+    The cosign-based REST push path is kept as a fallback for environments
+    where collectsub cannot reach the registry (e.g. private repos), but is
+    disabled by default (GUAC_COLLECTOR_URL unset).
     """
+    # Primary path: tell oci-collector to fetch attestations for this image.
+    # It will publish SBOM/VEX into NATS DOCUMENTS.collected, the ingestor
+    # parses them into the graph asynchronously.
+    collectsub_ok = _notify_collectsub(image)
+
+    # Fallback path: only runs if GUAC_COLLECTOR_URL is set explicitly to
+    # a custom HTTP shim. With stock GUAC this is a no-op.
     pulled_any = False
     pushed_any = False
+    if _collector_endpoint():
+        sbom = _cosign_download_attestation(image, "https://spdx.dev/Document")
+        if sbom is None:
+            sbom = _cosign_download_attestation(image, "spdxjson")
+        if sbom is not None:
+            pulled_any = True
+            if _push_to_collector(sbom, "DOCUMENT_SPDX"):
+                pushed_any = True
 
-    sbom = _cosign_download_attestation(image, "https://spdx.dev/Document")
-    if sbom is None:
-        sbom = _cosign_download_attestation(image, "spdxjson")
-    if sbom is not None:
-        pulled_any = True
-        if _push_to_collector(sbom, "DOCUMENT_SPDX"):
-            pushed_any = True
-
-    vex = _cosign_download_attestation(image, "https://openvex.dev/ns/v0.2.0")
-    if vex is None:
-        vex = _cosign_download_attestation(image, "vex")
-    if vex is not None:
-        pulled_any = True
-        if _push_to_collector(vex, "DOCUMENT_OPENVEX"):
-            pushed_any = True
+        vex = _cosign_download_attestation(image, "https://openvex.dev/ns/v0.2.0")
+        if vex is None:
+            vex = _cosign_download_attestation(image, "vex")
+        if vex is not None:
+            pulled_any = True
+            if _push_to_collector(vex, "DOCUMENT_OPENVEX"):
+                pushed_any = True
 
     # Always emit the deployment edge — it is the cheap mutation that
     # links the OCI image to the K8s deployment, independent of whether
     # the heavier SBOM/VEX payload was retrievable.
     deployment_edge_ok = _emit_deployment_edge(image, namespace, app_name)
 
-    if pulled_any and pushed_any:
+    if deployment_edge_ok and collectsub_ok:
         _patch_status_sync(
             namespace, app_name, "Completed",
-            f"GUAC graph updated (SBOM/VEX pulled from OCI, deployment edge: {'ok' if deployment_edge_ok else 'skipped'}).",
+            "GUAC graph updated: deployment edge ingested, oci-collector notified via collectsub "
+            "(SBOM/VEX will appear asynchronously once collected).",
         )
-    elif deployment_edge_ok and not pulled_any:
+    elif deployment_edge_ok:
         _patch_status_sync(
             namespace, app_name, "Completed",
-            "GUAC graph updated with deployment edge only — no SBOM/VEX attestation found on the image.",
+            "GUAC graph updated with deployment edge only — collectsub unreachable, SBOM/VEX "
+            "discovery will not happen until that is resolved.",
+        )
+    elif collectsub_ok:
+        _patch_status_sync(
+            namespace, app_name, "Failed",
+            "GUAC collectsub accepted the image but the GraphQL deployment edge failed — "
+            "check graphql-server logs.",
         )
     else:
         _patch_status_sync(
             namespace, app_name, "Failed",
-            "GUAC ingestion did not complete. Image may lack attestations, or GUAC collector is unreachable.",
+            "GUAC ingestion did not complete: both collectsub and the GraphQL endpoint are "
+            "unreachable. Check GUAC service health.",
         )
 
 

@@ -19,7 +19,22 @@ RUN curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
+COPY proto /app/proto
 COPY src /app/src
+
+# Generate the GUAC collectsub gRPC stubs into the package directory.
+# Kept inside the image (not committed) so the generated files stay in sync
+# with the grpcio/protobuf versions pinned in requirements.txt.
+RUN pip install --no-cache-dir grpcio-tools==1.66.1 \
+    && python -m grpc_tools.protoc \
+        -I /app/proto \
+        --python_out=/app/src/zta_operator/_grpc \
+        --grpc_python_out=/app/src/zta_operator/_grpc \
+        /app/proto/collectsub.proto \
+    && pip uninstall -y grpcio-tools \
+    && sed -i 's/^import collectsub_pb2 as/from . import collectsub_pb2 as/' \
+        /app/src/zta_operator/_grpc/collectsub_pb2_grpc.py
+
 ENV PYTHONPATH=/app/src
 
 CMD ["kopf", "run", "--all-namespaces", "-m", "zta_operator.operator"]

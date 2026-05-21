@@ -48,8 +48,8 @@ spec:
           env:
             - name: GUAC_GRAPHQL_URL
               value: "http://graphql-server.guac.svc.cluster.local:8080/query"
-            - name: GUAC_COLLECTOR_URL
-              value: "http://rest-api.guac.svc.cluster.local:8081/v0/collect"
+            - name: GUAC_COLLECTSUB_URL
+              value: "collectsub.guac.svc.cluster.local:2782"
             - name: LOG_LEVEL
               value: INFO
             - name: TALON_NAMESPACE

@@ -56,8 +56,14 @@ spec:
               value: {{ .Values.operator.ingress.oauth2IngressPath | quote }}
             - name: GUAC_GRAPHQL_URL
               value: {{ .Values.operator.guac.graphqlUrl | quote }}
+            {{- with .Values.operator.guac.collectsubUrl }}
+            - name: GUAC_COLLECTSUB_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.operator.guac.collectorUrl }}
             - name: GUAC_COLLECTOR_URL
-              value: {{ .Values.operator.guac.collectorUrl | quote }}
+              value: {{ . | quote }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}

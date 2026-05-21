@@ -23,7 +23,13 @@ operator:
   # then skips the async worker and PATCHes status.guacIngestionStatus=Disabled.
   guac:
     graphqlUrl: http://graphql-server.guac.svc.cluster.local:8080/query
-    collectorUrl: http://rest-api.guac.svc.cluster.local:8081/v0/collect
+    # gRPC endpoint that drives oci-collector. Leave empty to disable SBOM/VEX
+    # discovery (deployment edges still land via graphqlUrl).
+    collectsubUrl: collectsub.guac.svc.cluster.local:2782
+    # Stock GUAC has no REST collector — leave empty to skip the push path.
+    # Set this only if you front GUAC with a custom HTTP shim that accepts
+    # {format, document} payloads.
+    collectorUrl: ""
   ingress:
     className: nginx
     path: /
