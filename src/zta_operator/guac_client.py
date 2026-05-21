@@ -70,6 +70,17 @@ def _collectsub_endpoint() -> str:
 def _notify_collectsub(image: str) -> bool:
     """Enqueue an OCI reference on GUAC's collectsub bus.
 
+    Sends DATATYPE_OCI_REGISTRY with the bare ``registry/repo`` (digest/tag
+    stripped). The stock GUAC chart runs ``oci-collector`` in polling mode,
+    which refuses entries that already carry a tag or digest with:
+
+        collector ended with error: image identifiers (tag or digest)
+        should not be specified when using polling
+
+    Polling on the repo lets oci-collector discover the exact digest tag
+    we just deployed plus any sibling tags — slightly broader than strictly
+    needed but harmless for graph completeness.
+
     Returns True on success. Failures are logged and swallowed — collectsub
     being down should not break the rest of GUAC ingestion (the deployment
     edge still lands via GraphQL).
@@ -87,14 +98,17 @@ def _notify_collectsub(image: str) -> bool:
         )
         return False
 
+    registry, repo, _digest = _split_oci_reference(image)
+    repo_ref = f"{registry}/{repo}" if registry else repo
+
     try:
         with grpc.insecure_channel(addr) as channel:
             stub = collectsub_pb2_grpc.CollectSubscriberServiceStub(channel)
             request = collectsub_pb2.AddCollectEntriesRequest(
                 entries=[
                     collectsub_pb2.CollectEntry(
-                        type=collectsub_pb2.DATATYPE_OCI,
-                        value=image,
+                        type=collectsub_pb2.DATATYPE_OCI_REGISTRY,
+                        value=repo_ref,
                         since_time=0,
                     )
                 ]
@@ -103,16 +117,23 @@ def _notify_collectsub(image: str) -> bool:
             if not response.success:
                 logger.warning(
                     "collectsub refused entry",
-                    extra={"event": "guac-collectsub-refused", "image": image},
+                    extra={
+                        "event": "guac-collectsub-refused",
+                        "repo": repo_ref,
+                    },
                 )
                 return False
+            logger.info(
+                "collectsub accepted OCI repo",
+                extra={"event": "guac-collectsub-accepted", "repo": repo_ref},
+            )
             return True
     except Exception as exc:
         logger.warning(
             "collectsub call failed",
             extra={
                 "event": "guac-collectsub-failed",
-                "image": image,
+                "repo": repo_ref,
                 "error": str(exc)[:200],
             },
         )
