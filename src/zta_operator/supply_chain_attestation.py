@@ -971,13 +971,28 @@ async def validate_admission_with_attestations(
 
     slsa_violations: list[str] = []
     if bool(slsa_policy.get("enforceSlsa", False)):
+        # SLSA attestations produced by slsa-github-generator are signed
+        # keyless with the IDENTITY OF THE REUSABLE WORKFLOW itself, not
+        # the caller's workflow. So the certificate-identity used for
+        # cosign verify-attestation must come from a dedicated list
+        # (slsaProvenancePolicy.trustedIssuers), not from the global
+        # sourceValidation.trustedIssuers (which targets the caller).
+        slsa_issuers = [
+            str(item).strip()
+            for item in (slsa_policy.get("trustedIssuers", []) or [])
+            if str(item).strip()
+        ]
+        # Fallback to global trustedIssuers if user didn't declare a
+        # dedicated list — keeps backward compatibility with SCA YAMLs
+        # written before this distinction existed.
+        slsa_issuers = slsa_issuers or trusted_issuers
         slsa_violations = await _verify_slsa_provenance(
             custom=custom,
             api_client=api_client,
             namespace=namespace,
             app_name=app_name,
             image=resolved_image,
-            trusted_issuers=trusted_issuers,
+            trusted_issuers=slsa_issuers,
             policy=slsa_policy,
         )
 

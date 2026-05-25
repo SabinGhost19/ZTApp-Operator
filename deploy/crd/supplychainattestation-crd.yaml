@@ -104,6 +104,20 @@ spec:
                     requiredLevel:
                       type: integer
                       default: 0
+                    # trustedIssuers used by cosign --certificate-identity
+                    # when verifying the SLSA attestation signature. SLSA
+                    # is signed by the slsa-github-generator reusable
+                    # workflow, NOT by the calling workflow — so it needs
+                    # its own issuer list distinct from
+                    # sourceValidation.trustedIssuers.
+                    trustedIssuers:
+                      type: array
+                      items:
+                        type: string
+                    # trustedBuilders / allowedBuildTypes are predicate-level
+                    # checks (matched against predicate.runDetails.builder.id
+                    # and predicate.buildDefinition.buildType). Independent
+                    # of the signing identity above.
                     trustedBuilders:
                       type: array
                       items:
