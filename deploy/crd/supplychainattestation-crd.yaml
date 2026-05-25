@@ -92,6 +92,39 @@ spec:
                       type: string
                       enum: [Reject, Alert]
                       default: Reject
+                slsaProvenancePolicy:
+                  type: object
+                  description: |
+                    Enforcement of signed SLSA v1.0 provenance attestations
+                    (predicate type https://slsa.dev/provenance/v1).
+                  properties:
+                    enforceSlsa:
+                      type: boolean
+                      default: false
+                    requiredLevel:
+                      type: integer
+                      default: 0
+                    trustedBuilders:
+                      type: array
+                      items:
+                        type: string
+                    allowedBuildTypes:
+                      type: array
+                      items:
+                        type: string
+                openVexPolicy:
+                  type: object
+                  description: |
+                    Enforcement of signed OpenVEX v0.2.0 attestations as a
+                    first-class artifact (independent of the Trivy-exemption
+                    code path).
+                  properties:
+                    enforceOpenVex:
+                      type: boolean
+                      default: false
+                    requireStatements:
+                      type: boolean
+                      default: false
                 customRules:
                   type: array
                   description: |
