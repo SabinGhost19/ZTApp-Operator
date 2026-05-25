@@ -1,3 +1,10 @@
+## [1.8.4](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.8.3...v1.8.4) (2026-05-25)
+
+
+### Bug Fixes
+
+* **slsa:** version pined ([6eb8dab](https://github.com/SabinGhost19/ZTApp-Operator/commit/6eb8dab26c373a39ee0cc0aeb85c33405e06b81b))
+
 ## [1.8.3](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.8.2...v1.8.3) (2026-05-25)
 
 
