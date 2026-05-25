@@ -1,3 +1,10 @@
+## [1.8.2](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.8.1...v1.8.2) (2026-05-25)
+
+
+### Bug Fixes
+
+* **sca-crd,ui:** admit new policy fields + handle ZTA deletion live ([1b1f88f](https://github.com/SabinGhost19/ZTApp-Operator/commit/1b1f88f54636616320a21a3032806b815ac64344))
+
 ## [1.8.1](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.8.0...v1.8.1) (2026-05-25)
 
 
