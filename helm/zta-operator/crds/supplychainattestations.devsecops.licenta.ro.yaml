@@ -92,6 +92,26 @@ spec:
                       type: string
                       enum: [Reject, Alert]
                       default: Reject
+                customRules:
+                  type: array
+                  description: |
+                    Dynamic policy rules evaluated by CEL (Common Expression Language).
+                    Each expression is evaluated with context:
+                      {voucher, image, zta, vex, sbom}
+                    Example: "voucher.build_context.slsa_level >= 3 && image.startsWith('ghcr.io/')"
+                  items:
+                    type: object
+                    required: [name, expression, action]
+                    properties:
+                      name:
+                        type: string
+                      description:
+                        type: string
+                      expression:
+                        type: string
+                      action:
+                        type: string
+                        enum: [Allow, Deny, Alert]
                 runtimeEnforcement:
                   type: object
                   properties:

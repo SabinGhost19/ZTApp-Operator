@@ -149,6 +149,26 @@ spec:
                   x-kubernetes-preserve-unknown-fields: true
                 details:
                   x-kubernetes-preserve-unknown-fields: true
+                # Per-check verification ledger written by the operator.
+                # Known keys: cosign, trivy, sbom, policyAttestation,
+                # slsaProvenance, openvex. Each entry is
+                # { passed: bool, reason: str, completedAt: iso8601,
+                #   digest?: str, extra fields preserved }.
+                # The UI reads these directly instead of regex-matching
+                # lastError.
+                verifications:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                # Ring-buffer of recent reconcile errors written by the
+                # operator. Each entry is
+                # { code, message, phase, retryable: bool, occurredAt: iso8601,
+                #   details?: object }. Older entries are trimmed by the
+                # operator; the UI renders this directly in ErrorLogPanel.
+                errors:
+                  type: array
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
                 # Async telemetry sub-status: the main `phase` flips to
                 # Running as soon as the Deployment is created, while
                 # guacIngestionStatus tracks the slow OCI->GUAC pull on
@@ -160,6 +180,13 @@ spec:
                 guacIngestionMessage:
                   type: string
                 guacIngestionCompletedAt:
+                  type: string
+                # SHA256 of the desired spec written by the operator after a
+                # successful reconcile. Used as an idempotency watermark to
+                # short-circuit reconcile re-triggers for the same spec
+                # (kopf field watchers can re-fire spuriously when two
+                # operators patch the same CR concurrently).
+                specReconcileHash:
                   type: string
       subresources:
         status: {}

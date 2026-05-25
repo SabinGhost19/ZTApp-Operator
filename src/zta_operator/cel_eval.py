@@ -43,6 +43,10 @@ class CelEvalResult:
     alert: list[str] = field(default_factory=list)
     allow: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    # Per-rule evaluation log surfaced to the UI via
+    # status.attestations.celEvaluations. Each entry:
+    # { name, expression, action, fired: bool, outcome: str, error?: str }
+    evaluations: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _evaluate_rule(env: Any, rule: dict[str, Any], context: dict[str, Any]) -> tuple[str | None, bool]:
@@ -90,26 +94,43 @@ def evaluate_custom_rules(
         action = str(rule.get("action", "Deny")).strip()
         if not expression:
             result.errors.append(f"rule {name!r} has no expression")
+            result.evaluations.append({
+                "name": name, "expression": expression, "action": action,
+                "fired": False, "outcome": "", "error": "no expression",
+            })
             continue
         try:
             program = env.program(env.compile(expression))
             outcome = program.evaluate(cel_context)
         except Exception as exc:
             result.errors.append(f"rule {name!r} evaluation failed: {exc}")
+            result.evaluations.append({
+                "name": name, "expression": expression, "action": action,
+                "fired": False, "outcome": "", "error": str(exc),
+            })
             continue
 
         truthy = bool(outcome)
+        fired = False
         # Semantics:
         #   Deny rules fire when expression is True (it describes a violation).
         #   Allow rules fire when expression is False (a required condition failed).
         #   Alert rules surface as warnings without blocking.
         if action == "Deny" and truthy:
             result.deny.append(f"{name}: {expression}")
+            fired = True
         elif action == "Allow" and not truthy:
             result.deny.append(f"{name} (required condition false): {expression}")
+            fired = True
         elif action == "Alert" and truthy:
             result.alert.append(f"{name}: {expression}")
+            fired = True
         elif action == "Allow" and truthy:
             result.allow.append(name)
+
+        result.evaluations.append({
+            "name": name, "expression": expression, "action": action,
+            "fired": fired, "outcome": "true" if truthy else "false",
+        })
 
     return result

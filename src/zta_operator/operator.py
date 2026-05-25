@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -47,6 +48,7 @@ from .supply_chain_attestation import (
     requires_provenance_verification,
     resolve_effective_supply_chain_policy,
     validate_admission_with_attestations,
+    _emit_event as _emit_zta_event,
 )
 from .supply_chain import SupplyChainError, verify_supply_chain
 from .talon import TalonConfigError, delete_talon_rule, upsert_talon_rule
@@ -83,6 +85,128 @@ def _status_patch(custom: client.CustomObjectsApi, namespace: str, name: str, pa
         name=name,
         body={"status": patch},
     )
+
+
+_ERROR_RING_BUFFER_MAX = 20
+
+
+def _classify_api_exception(exc: ApiException) -> tuple[str, bool]:
+    """Map a Kubernetes ApiException to (code, retryable).
+
+    Codes are stable strings consumed by the UI; retryable signals
+    whether the controller should keep retrying or escalate to
+    PermanentError.
+    """
+    status_code = int(getattr(exc, "status", 0) or 0)
+    if status_code == 404:
+        return "k8s-resource-not-found", True
+    if status_code == 409:
+        return "k8s-conflict", True
+    if status_code == 403:
+        return "k8s-forbidden", False
+    if status_code == 401:
+        return "k8s-unauthorized", False
+    if status_code == 422:
+        return "k8s-invalid-spec", False
+    if 500 <= status_code < 600:
+        return "k8s-server-error", True
+    if status_code == 0:
+        return "k8s-network", True
+    return f"k8s-http-{status_code}", True
+
+
+def _record_error(
+    custom: client.CustomObjectsApi,
+    namespace: str,
+    name: str,
+    *,
+    code: str,
+    message: str,
+    phase: str = "",
+    retryable: bool = True,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """Append a structured error entry to status.errors (ring buffer).
+
+    Best-effort: failures here never abort the reconcile, but they are
+    logged so the operator's own observability remains intact.
+    """
+    from datetime import datetime, timezone
+
+    entry: dict[str, Any] = {
+        "code": str(code or "unknown")[:128],
+        "message": str(message or "")[:2048],
+        "phase": str(phase or "")[:64],
+        "retryable": bool(retryable),
+        "occurredAt": datetime.now(timezone.utc).isoformat(),
+    }
+    if details:
+        try:
+            entry["details"] = json.loads(json.dumps(details, default=str))
+        except Exception:
+            entry["details"] = {"_raw": str(details)[:1024]}
+    try:
+        # Read-modify-write the ring buffer. JSON merge-patch on arrays
+        # replaces the whole list, so we must fetch the current state.
+        # Race conditions on this field are acceptable because the
+        # operator is the only writer.
+        obj = custom.get_namespaced_custom_object(
+            group=GROUP, version=VERSION, namespace=namespace,
+            plural=PLURAL, name=name,
+        )
+        existing = list(((obj or {}).get("status", {}) or {}).get("errors", []) or [])
+        existing.append(entry)
+        if len(existing) > _ERROR_RING_BUFFER_MAX:
+            existing = existing[-_ERROR_RING_BUFFER_MAX:]
+        _status_patch(custom, namespace, name, {"errors": existing})
+    except ApiException as patch_exc:
+        logger.warning(
+            "status.errors patch failed",
+            extra={"event": "record-error-failed",
+                   "patch_status": getattr(patch_exc, "status", 0),
+                   "original_code": code, "original_message": message[:256]},
+        )
+    except Exception as patch_exc:  # noqa: BLE001 — last resort
+        logger.warning(
+            "status.errors patch failed (non-API)",
+            extra={"event": "record-error-failed",
+                   "error": str(patch_exc),
+                   "original_code": code, "original_message": message[:256]},
+        )
+
+
+def _record_verification(
+    custom: client.CustomObjectsApi,
+    namespace: str,
+    name: str,
+    key: str,
+    *,
+    passed: bool,
+    reason: str = "",
+    **extra: Any,
+) -> None:
+    """Write a single check result into status.verifications.<key>.
+
+    Merge-patch: only the named sub-key is overwritten, sibling
+    verification entries are preserved by the API server.
+    """
+    from datetime import datetime, timezone
+
+    entry: dict[str, Any] = {
+        "passed": bool(passed),
+        "reason": str(reason or ("ok" if passed else "failed")),
+        "completedAt": datetime.now(timezone.utc).isoformat(),
+    }
+    for ekey, evalue in extra.items():
+        if evalue is None:
+            continue
+        entry[ekey] = evalue
+    try:
+        _status_patch(custom, namespace, name, {"verifications": {key: entry}})
+    except ApiException:
+        # CRD may not yet have the field on older clusters; swallow so
+        # the reconcile can continue. UI falls back to lastError regex.
+        logger.debug("status.verifications.%s patch failed (older CRD?)", key)
 
 
 def _owner_reference(body: dict[str, Any]) -> dict:
@@ -300,7 +424,9 @@ async def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, pat
             adapter.warning("Runtime policy drift detected and sanctioned", extra={"event": "runtime-drift-enforced"})
             raise kopf.PermanentError("Runtime policy drift detected")
 
-        adapter.info("Starting supply-chain verification", extra={"event": "supply-chain-start"})
+        import time as _time_sc
+        _t0_sc = _time_sc.monotonic()
+        adapter.info("Starting supply-chain verification", extra={"event": "supply-chain-start", "image": image})
         result = await verify_supply_chain(
             image=image,
             require_signature=bool(effective_policy.get("requireSignature", True)),
@@ -308,6 +434,65 @@ async def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, pat
             max_vulnerabilities=str(effective_policy.get("maxAllowedSeverity", "Medium")),
             fail_on_fixable=bool(effective_policy.get("failOnFixable", False)),
         )
+        _sc_duration_ms = int((_time_sc.monotonic() - _t0_sc) * 1000)
+        # Disambiguate which check failed: verify_supply_chain runs cosign
+        # first, then trivy. A cosign-* reason means trivy never ran.
+        _cosign_required = bool(effective_policy.get("requireSignature", True))
+        _is_cosign_failure = result.reason.startswith("cosign-")
+        if _cosign_required:
+            _cosign_passed = not _is_cosign_failure
+            _record_verification(
+                custom, namespace, name, "cosign",
+                passed=_cosign_passed,
+                reason=result.reason if _is_cosign_failure else "ok",
+                # Total supply-chain duration is the best proxy we have
+                # without splitting cosign/trivy timings inside the helper.
+                durationMs=_sc_duration_ms,
+            )
+            if _cosign_passed:
+                adapter.info(
+                    "Cosign keyless signature verified",
+                    extra={"event": "cosign-verification-passed", "duration_ms": _sc_duration_ms},
+                )
+                _emit_zta_event(api_client, namespace, name,
+                                reason="CosignVerified",
+                                message=f"keyless signature ok ({_sc_duration_ms} ms)")
+            else:
+                adapter.warning(
+                    "Cosign signature verification failed",
+                    extra={"event": "cosign-verification-failed", "reason": result.reason,
+                           "duration_ms": _sc_duration_ms},
+                )
+                _emit_zta_event(api_client, namespace, name,
+                                reason="CosignVerificationFailed",
+                                message=f"{result.reason} ({_sc_duration_ms} ms)",
+                                event_type="Warning")
+        if not _is_cosign_failure:
+            _record_verification(
+                custom, namespace, name, "trivy",
+                passed=result.success,
+                reason=result.reason,
+                durationMs=_sc_duration_ms,
+                highest=(result.details or {}).get("highest"),
+                threshold=(result.details or {}).get("threshold"),
+                vexExempted=(result.details or {}).get("vexExempted"),
+            )
+            if result.success:
+                adapter.info(
+                    "Trivy vulnerability scan completed within policy threshold",
+                    extra={"event": "trivy-scan-passed",
+                           "duration_ms": _sc_duration_ms,
+                           "highest": (result.details or {}).get("highest"),
+                           "threshold": (result.details or {}).get("threshold")},
+                )
+                _emit_zta_event(api_client, namespace, name,
+                                reason="TrivyScanPassed",
+                                message=f"highest={(result.details or {}).get('highest','NONE')} threshold={(result.details or {}).get('threshold','')} ({_sc_duration_ms} ms)")
+            else:
+                _emit_zta_event(api_client, namespace, name,
+                                reason="TrivyScanRejected",
+                                message=f"{result.reason} ({_sc_duration_ms} ms)",
+                                event_type="Warning")
         if not result.success:
             vulnerability_action = str(effective_policy.get("onVulnerabilityFound", "Alert") or "Alert")
             is_vulnerability_failure = result.reason in VULNERABILITY_FAILURE_REASONS
@@ -597,6 +782,9 @@ async def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, pat
                 "lastError": str(exc),
             },
         )
+        _record_error(custom, namespace, name,
+                      code="sca-policy-missing", message=str(exc),
+                      phase="Validating", retryable=True)
         adapter.info("Referenced SCA not yet present; retrying", extra={"event": "sca-policy-missing"})
         raise kopf.TemporaryError(str(exc), delay=15) from exc
 
@@ -612,13 +800,97 @@ async def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, pat
                 "lastError": str(exc),
             },
         )
+        _record_error(custom, namespace, name,
+                      code="attestation-policy-violation", message=str(exc),
+                      phase="Attestation", retryable=False)
         adapter.exception("Policy attestation validation failed", extra={"event": "attestation-policy-failed"})
         raise kopf.PermanentError(str(exc)) from exc
 
-    except (SupplyChainError, TalonConfigError, ApiException, ValueError) as exc:
-        _status_patch(custom, namespace, name, {"phase": "Degraded", "lastError": str(exc)})
-        adapter.exception("Reconciliation failed", extra={"event": "reconcile-error"})
+    except ApiException as exc:
+        code, retryable = _classify_api_exception(exc)
+        body_text = str(getattr(exc, "body", "") or "")[:512]
+        _status_patch(custom, namespace, name,
+                      {"phase": "Degraded", "lastError": f"{code}: {exc.reason}"})
+        _record_error(custom, namespace, name,
+                      code=code, message=str(exc.reason or "Kubernetes API error"),
+                      phase="K8sApi", retryable=retryable,
+                      details={"status": int(getattr(exc, "status", 0) or 0),
+                               "body": body_text})
+        adapter.exception("Kubernetes API call failed during reconcile",
+                          extra={"event": "k8s-api-error", "code": code,
+                                 "status": int(getattr(exc, "status", 0) or 0)})
+        if not retryable:
+            raise kopf.PermanentError(f"{code}: {exc.reason}") from exc
+        raise kopf.TemporaryError(f"{code}: {exc.reason}", delay=30) from exc
+
+    except SupplyChainError as exc:
+        _status_patch(custom, namespace, name,
+                      {"phase": "Degraded", "lastError": str(exc)})
+        _record_error(custom, namespace, name,
+                      code="supply-chain-error", message=str(exc),
+                      phase="SupplyChain", retryable=True)
+        adapter.exception("Supply-chain check error",
+                          extra={"event": "supply-chain-error"})
         raise kopf.TemporaryError(str(exc), delay=30) from exc
+
+    except TalonConfigError as exc:
+        _status_patch(custom, namespace, name,
+                      {"phase": "Degraded", "lastError": str(exc)})
+        _record_error(custom, namespace, name,
+                      code="talon-config-error", message=str(exc),
+                      phase="RuntimeEnforcement", retryable=True)
+        adapter.exception("Talon configuration error",
+                          extra={"event": "talon-config-error"})
+        raise kopf.TemporaryError(str(exc), delay=30) from exc
+
+    except ValueError as exc:
+        # Spec validation failures (missing required fields, bad types).
+        # Permanent — re-running with the same spec will fail again.
+        _status_patch(custom, namespace, name,
+                      {"phase": "Failed_SupplyChain", "lastError": str(exc)})
+        _record_error(custom, namespace, name,
+                      code="spec-validation-error", message=str(exc),
+                      phase="Validating", retryable=False)
+        adapter.exception("Spec validation error", extra={"event": "spec-validation-error"})
+        raise kopf.PermanentError(str(exc)) from exc
+
+    except asyncio.TimeoutError as exc:
+        msg = f"reconcile timed out: {exc}"
+        _status_patch(custom, namespace, name,
+                      {"phase": "Degraded", "lastError": msg})
+        _record_error(custom, namespace, name,
+                      code="reconcile-timeout", message=msg,
+                      phase="Unknown", retryable=True)
+        adapter.exception("Reconcile timed out", extra={"event": "reconcile-timeout"})
+        raise kopf.TemporaryError(msg, delay=30) from exc
+
+    except kopf.TemporaryError:
+        raise
+    except kopf.PermanentError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — defensive catch-all
+        # Unanticipated path: log full traceback, snapshot a short detail
+        # for the UI, retry with backoff. This is the safety net for
+        # "impossible" errors — programming bugs, sudden library changes,
+        # transient OS issues — so the operator never crashes silently.
+        import traceback as _tb
+        tb_excerpt = _tb.format_exc(limit=6)
+        msg = f"unexpected error: {type(exc).__name__}: {exc}"
+        try:
+            _status_patch(custom, namespace, name,
+                          {"phase": "Degraded", "lastError": msg[:512]})
+        except Exception:
+            pass
+        _record_error(custom, namespace, name,
+                      code="reconcile-unexpected",
+                      message=str(exc) or type(exc).__name__,
+                      phase="Unknown", retryable=True,
+                      details={"exceptionType": type(exc).__name__,
+                               "traceback": tb_excerpt[-1500:]})
+        adapter.exception("Unexpected error during reconcile",
+                          extra={"event": "reconcile-unexpected",
+                                 "exception_type": type(exc).__name__})
+        raise kopf.TemporaryError(msg, delay=60) from exc
 
 
 @kopf.on.create(GROUP, VERSION, PLURAL)

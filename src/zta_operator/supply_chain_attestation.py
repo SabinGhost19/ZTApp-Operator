@@ -198,6 +198,198 @@ async def _verify_attestation_by_type(image: str, attestation_type: str, trusted
     )
 
 
+async def _verify_slsa_provenance(
+    *,
+    custom: "client.CustomObjectsApi",
+    api_client: client.ApiClient,
+    namespace: str,
+    app_name: str,
+    image: str,
+    trusted_issuers: list[str],
+    policy: dict[str, Any],
+) -> list[str]:
+    """Verify SLSA v1.0 provenance attestation.
+
+    Uses cosign `--type slsaprovenance1` (predicate type
+    https://slsa.dev/provenance/v1). Writes
+    status.verifications.slsaProvenance, emits a K8s event for the
+    EventsTimelinePanel, and returns a list of policy violations
+    (empty if passed).
+    """
+    import time
+    t0 = time.monotonic()
+    logger.info(
+        "SLSA provenance verification started",
+        extra={"event": "slsa-attestation-start", "zta_name": app_name, "zta_namespace": namespace, "image": image},
+    )
+    try:
+        attestation = await _verify_attestation_by_type(
+            image=image,
+            attestation_type="slsaprovenance1",
+            trusted_issuers=trusted_issuers,
+        )
+    except Exception as exc:
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        reason = f"slsa-attestation-missing: {exc}"
+        _record_verification(
+            custom, namespace, app_name, "slsaProvenance",
+            passed=False, reason=reason, durationMs=duration_ms,
+        )
+        logger.warning(
+            "SLSA provenance attestation missing or invalid",
+            extra={"event": "slsa-attestation-missing", "zta_name": app_name,
+                   "zta_namespace": namespace, "duration_ms": duration_ms, "error": str(exc)},
+        )
+        _emit_event(api_client, namespace, app_name,
+                    reason="SlsaAttestationMissing", message=reason, event_type="Warning")
+        return [reason]
+
+    predicate = attestation.get("predicate", {}) or {}
+    build_def = predicate.get("buildDefinition", {}) or {}
+    run_details = predicate.get("runDetails", {}) or {}
+    builder = (run_details.get("builder", {}) or {})
+    build_type = str(build_def.get("buildType", "")).strip()
+    builder_id = str(builder.get("id", "")).strip()
+
+    failures: list[str] = []
+    allowed_build_types = [str(x).strip() for x in (policy.get("allowedBuildTypes", []) or []) if str(x).strip()]
+    if allowed_build_types and build_type not in allowed_build_types:
+        failures.append(f"slsa-build-type-untrusted: {build_type or '<missing>'}")
+
+    trusted_builders = [str(x).strip() for x in (policy.get("trustedBuilders", []) or []) if str(x).strip()]
+    if trusted_builders and builder_id not in trusted_builders:
+        failures.append(f"slsa-builder-untrusted: {builder_id or '<missing>'}")
+
+    required_level = int(policy.get("requiredLevel", 0) or 0)
+    if required_level >= 3 and not builder_id:
+        failures.append("slsa-builder-missing-for-level-3")
+
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    if failures:
+        reason = "; ".join(failures)
+        _record_verification(
+            custom, namespace, app_name, "slsaProvenance",
+            passed=False, reason=reason, durationMs=duration_ms,
+            buildType=build_type, builderId=builder_id,
+            digest=_hash_json(predicate),
+        )
+        logger.warning(
+            "SLSA provenance policy violations",
+            extra={"event": "slsa-attestation-rejected", "zta_name": app_name,
+                   "zta_namespace": namespace, "duration_ms": duration_ms,
+                   "builder_id": builder_id, "build_type": build_type, "failures": failures},
+        )
+        _emit_event(api_client, namespace, app_name,
+                    reason="SlsaAttestationRejected", message=reason, event_type="Warning")
+        return failures
+
+    _record_verification(
+        custom, namespace, app_name, "slsaProvenance",
+        passed=True, reason="ok", durationMs=duration_ms,
+        buildType=build_type, builderId=builder_id,
+        digest=_hash_json(predicate),
+    )
+    logger.info(
+        "SLSA provenance verified",
+        extra={"event": "slsa-attestation-verified", "zta_name": app_name,
+               "zta_namespace": namespace, "duration_ms": duration_ms,
+               "builder_id": builder_id, "build_type": build_type},
+    )
+    _emit_event(api_client, namespace, app_name,
+                reason="SlsaAttestationVerified",
+                message=f"builder={builder_id} buildType={build_type} ({duration_ms} ms)")
+    return []
+
+
+async def _verify_openvex_attestation(
+    *,
+    custom: "client.CustomObjectsApi",
+    api_client: client.ApiClient,
+    namespace: str,
+    app_name: str,
+    image: str,
+    trusted_issuers: list[str],
+    policy: dict[str, Any],
+) -> list[str]:
+    """Verify OpenVEX v0.2.0 attestation as a signed first-class artifact.
+
+    Independent of the trivy-exemption code path in vex.py; this check
+    only validates that a signed OpenVEX attestation exists and matches
+    schema basics. Writes status.verifications.openvex and emits a K8s
+    event for the EventsTimelinePanel.
+    """
+    import time
+    t0 = time.monotonic()
+    logger.info(
+        "OpenVEX attestation verification started",
+        extra={"event": "openvex-attestation-start", "zta_name": app_name,
+               "zta_namespace": namespace, "image": image},
+    )
+    try:
+        attestation = await _verify_attestation_by_type(
+            image=image,
+            attestation_type="https://openvex.dev/ns/v0.2.0",
+            trusted_issuers=trusted_issuers,
+        )
+    except Exception as exc:
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        reason = f"openvex-attestation-missing: {exc}"
+        _record_verification(
+            custom, namespace, app_name, "openvex",
+            passed=False, reason=reason, durationMs=duration_ms,
+        )
+        logger.warning(
+            "OpenVEX attestation missing or invalid",
+            extra={"event": "openvex-attestation-missing", "zta_name": app_name,
+                   "zta_namespace": namespace, "duration_ms": duration_ms, "error": str(exc)},
+        )
+        _emit_event(api_client, namespace, app_name,
+                    reason="OpenVexAttestationMissing", message=reason, event_type="Warning")
+        return [reason]
+
+    predicate = attestation.get("predicate", {}) or {}
+    statements = predicate.get("statements", []) or []
+    failures: list[str] = []
+    if not isinstance(statements, list):
+        failures.append("openvex-statements-not-a-list")
+    if bool(policy.get("requireStatements", False)) and not statements:
+        failures.append("openvex-no-statements")
+
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    if failures:
+        reason = "; ".join(failures)
+        _record_verification(
+            custom, namespace, app_name, "openvex",
+            passed=False, reason=reason, durationMs=duration_ms,
+            statementCount=len(statements) if isinstance(statements, list) else 0,
+        )
+        logger.warning(
+            "OpenVEX attestation rejected",
+            extra={"event": "openvex-attestation-rejected", "zta_name": app_name,
+                   "zta_namespace": namespace, "duration_ms": duration_ms, "failures": failures},
+        )
+        _emit_event(api_client, namespace, app_name,
+                    reason="OpenVexAttestationRejected", message=reason, event_type="Warning")
+        return failures
+
+    _record_verification(
+        custom, namespace, app_name, "openvex",
+        passed=True, reason="ok", durationMs=duration_ms,
+        statementCount=len(statements),
+        digest=_hash_json(predicate),
+    )
+    logger.info(
+        "OpenVEX attestation verified",
+        extra={"event": "openvex-attestation-verified", "zta_name": app_name,
+               "zta_namespace": namespace, "duration_ms": duration_ms,
+               "statement_count": len(statements)},
+    )
+    _emit_event(api_client, namespace, app_name,
+                reason="OpenVexAttestationVerified",
+                message=f"{len(statements)} statements ({duration_ms} ms)")
+    return []
+
+
 async def _resolve_digest(image: str) -> str:
     if "@sha256:" in image:
         return image
@@ -310,14 +502,19 @@ def _validate_manifest_hash(
     return deny, alert, computed_hash
 
 
-def _emit_warning_event(
+def _emit_event(
     api_client: client.ApiClient,
     namespace: str,
     app_name: str,
     reason: str,
     message: str,
+    *,
+    event_type: str = "Normal",
+    action: str = "Verification",
 ) -> None:
-    """Emit a K8s Warning Event on the ZTA object so `kubectl describe` surfaces it."""
+    """Emit a K8s Event on the ZTA object so `kubectl describe` and the
+    UI's EventsTimelinePanel surface it. Best-effort — failures here must
+    not abort the reconcile."""
     try:
         events_api = client.EventsV1Api(api_client)
         now = datetime.now(timezone.utc)
@@ -329,10 +526,10 @@ def _emit_warning_event(
             event_time=now,
             reporting_controller="zta-operator",
             reporting_instance="zta-operator",
-            action="Audit",
+            action=action,
             reason=reason,
             note=message[:1024],
-            type="Warning",
+            type=event_type,
             regarding=client.V1ObjectReference(
                 api_version=f"{GROUP}/{VERSION}",
                 kind="ZeroTrustApplication",
@@ -342,6 +539,24 @@ def _emit_warning_event(
         )
         events_api.create_namespaced_event(namespace=namespace, body=event)
     except Exception as exc:  # event emission is best-effort
+        logger.warning(
+            "Failed to emit K8s event",
+            extra={"event": "audit-event-emit-failed", "reason": reason, "error": str(exc)},
+        )
+
+
+def _emit_warning_event(
+    api_client: client.ApiClient,
+    namespace: str,
+    app_name: str,
+    reason: str,
+    message: str,
+) -> None:
+    """Backwards-compat wrapper around _emit_event for existing call sites."""
+    try:
+        _emit_event(api_client, namespace, app_name, reason, message,
+                    event_type="Warning", action="Audit")
+    except Exception as exc:  # belt-and-braces
         logger.warning(
             "Failed to emit K8s warning event",
             extra={"event": "audit-event-emit-failed", "reason": reason, "error": str(exc)},
@@ -508,6 +723,31 @@ def _status_patch(custom: client.CustomObjectsApi, namespace: str, name: str, pa
     )
 
 
+def _record_verification(
+    custom: client.CustomObjectsApi,
+    namespace: str,
+    name: str,
+    key: str,
+    *,
+    passed: bool,
+    reason: str = "",
+    **extra: Any,
+) -> None:
+    entry: dict[str, Any] = {
+        "passed": bool(passed),
+        "reason": str(reason or ("ok" if passed else "failed")),
+        "completedAt": datetime.now(timezone.utc).isoformat(),
+    }
+    for ekey, evalue in extra.items():
+        if evalue is None:
+            continue
+        entry[ekey] = evalue
+    try:
+        _status_patch(custom, namespace, name, {"verifications": {key: entry}})
+    except ApiException:
+        logger.debug("status.verifications.%s patch failed (older CRD?)", key)
+
+
 def apply_sanction(api_client: client.ApiClient, namespace: str, app_name: str, sanction: str) -> str:
     sanction = sanction.strip()
     apps = client.AppsV1Api(api_client)
@@ -598,6 +838,8 @@ async def validate_admission_with_attestations(
     sbom_policy = global_spec.get("sbomPolicy", {}) or {}
     policy_binding = global_spec.get("policyBinding", {}) or {}
     strict_manifest_hash = global_spec.get("strictManifestHash", {}) or {}
+    slsa_policy = global_spec.get("slsaProvenancePolicy", {}) or {}
+    openvex_policy = global_spec.get("openVexPolicy", {}) or {}
 
     sbom_packages: list[dict[str, str]] = []
     sbom_digest = ""
@@ -608,24 +850,58 @@ async def validate_admission_with_attestations(
     computed_infra_hash = ""
 
     if bool(sbom_policy.get("enforceSBOM", False)):
-        sbom_attestation = await _verify_attestation_by_type(
-            image=resolved_image,
-            attestation_type="spdxjson",
-            trusted_issuers=trusted_issuers,
+        import time as _time_sbom
+        _t0_sbom = _time_sbom.monotonic()
+        logger.info(
+            "SBOM attestation verification started",
+            extra={"event": "attestation-sbom-start", "zta_name": app_name,
+                   "zta_namespace": namespace, "image": resolved_image},
         )
+        try:
+            sbom_attestation = await _verify_attestation_by_type(
+                image=resolved_image,
+                attestation_type="spdxjson",
+                trusted_issuers=trusted_issuers,
+            )
+        except Exception as exc:
+            _duration_ms = int((_time_sbom.monotonic() - _t0_sbom) * 1000)
+            _reason = f"sbom-attestation-missing: {exc}"
+            _record_verification(
+                custom, namespace, app_name, "sbom",
+                passed=False, reason=_reason, durationMs=_duration_ms,
+            )
+            logger.warning(
+                "SBOM attestation missing or invalid",
+                extra={"event": "attestation-sbom-missing", "zta_name": app_name,
+                       "zta_namespace": namespace, "duration_ms": _duration_ms, "error": str(exc)},
+            )
+            _emit_event(api_client, namespace, app_name,
+                        reason="SbomAttestationMissing", message=_reason, event_type="Warning")
+            raise
         sbom_predicate = sbom_attestation.get("predicate", {}) or {}
         sbom_packages = _extract_sbom_packages(sbom_predicate)
         sbom_digest = _hash_json(sbom_predicate)
+        _duration_ms = int((_time_sbom.monotonic() - _t0_sbom) * 1000)
+        _record_verification(
+            custom, namespace, app_name, "sbom",
+            passed=True, reason="ok", durationMs=_duration_ms,
+            digest=sbom_digest,
+            packageCount=len(sbom_packages),
+        )
         logger.info(
             "SBOM attestation extracted",
             extra={
                 "event": "attestation-sbom-extracted",
                 "zta_name": app_name,
                 "zta_namespace": namespace,
+                "duration_ms": _duration_ms,
                 "sbom_packages_count": len(sbom_packages),
                 "sbom_digest": sbom_digest,
             },
         )
+        _emit_event(api_client, namespace, app_name,
+                    reason="SbomAttestationVerified",
+                    message=f"{len(sbom_packages)} packages, digest={sbom_digest[:24]}... ({_duration_ms} ms)")
 
     if bool(policy_binding.get("enabled", False)):
         attestation_type = (
@@ -637,14 +913,51 @@ async def validate_admission_with_attestations(
             ).strip()
             or "https://devsecops.licenta.ro/attestations/custom-zta-policy/v1"
         )
-        policy_attestation = await _verify_attestation_by_type(
-            image=resolved_image,
-            attestation_type=attestation_type,
-            trusted_issuers=trusted_issuers,
+        import time as _time_pol
+        _t0_pol = _time_pol.monotonic()
+        logger.info(
+            "Policy attestation verification started",
+            extra={"event": "attestation-policy-start", "zta_name": app_name,
+                   "zta_namespace": namespace, "image": resolved_image,
+                   "attestation_type": attestation_type},
         )
+        try:
+            policy_attestation = await _verify_attestation_by_type(
+                image=resolved_image,
+                attestation_type=attestation_type,
+                trusted_issuers=trusted_issuers,
+            )
+        except Exception as exc:
+            _duration_ms = int((_time_pol.monotonic() - _t0_pol) * 1000)
+            _reason = f"policy-attestation-missing: {exc}"
+            _record_verification(
+                custom, namespace, app_name, "policyAttestation",
+                passed=False, reason=_reason, durationMs=_duration_ms,
+                attestationType=attestation_type,
+            )
+            logger.warning(
+                "Policy attestation missing or invalid",
+                extra={"event": "attestation-policy-missing-failed",
+                       "zta_name": app_name, "zta_namespace": namespace,
+                       "duration_ms": _duration_ms, "error": str(exc)},
+            )
+            _emit_event(api_client, namespace, app_name,
+                        reason="PolicyAttestationMissing", message=_reason, event_type="Warning")
+            raise
         policy_predicate = policy_attestation.get("predicate", {}) or {}
         policy_digest = _hash_json(policy_predicate)
         expected_infra_hash = str(policy_predicate.get("expected_infra_hash", "")).strip()
+        _duration_ms = int((_time_pol.monotonic() - _t0_pol) * 1000)
+        _record_verification(
+            custom, namespace, app_name, "policyAttestation",
+            passed=True, reason="ok", durationMs=_duration_ms,
+            attestationType=attestation_type,
+            digest=policy_digest,
+            expectedInfraHash=expected_infra_hash,
+        )
+        _emit_event(api_client, namespace, app_name,
+                    reason="PolicyAttestationVerified",
+                    message=f"type={attestation_type} digest={policy_digest[:24]}... ({_duration_ms} ms)")
         logger.info(
             "Policy attestation extracted",
             extra={
@@ -656,7 +969,33 @@ async def validate_admission_with_attestations(
             },
         )
 
+    slsa_violations: list[str] = []
+    if bool(slsa_policy.get("enforceSlsa", False)):
+        slsa_violations = await _verify_slsa_provenance(
+            custom=custom,
+            api_client=api_client,
+            namespace=namespace,
+            app_name=app_name,
+            image=resolved_image,
+            trusted_issuers=trusted_issuers,
+            policy=slsa_policy,
+        )
+
+    openvex_violations: list[str] = []
+    if bool(openvex_policy.get("enforceOpenVex", False)):
+        openvex_violations = await _verify_openvex_attestation(
+            custom=custom,
+            api_client=api_client,
+            namespace=namespace,
+            app_name=app_name,
+            image=resolved_image,
+            trusted_issuers=trusted_issuers,
+            policy=openvex_policy,
+        )
+
     violations: list[str] = []
+    violations.extend(slsa_violations)
+    violations.extend(openvex_violations)
     alerts: list[str] = []
     violations.extend(_validate_sbom_against_policy(sbom_packages, sbom_policy))
     if policy_predicate:
@@ -682,6 +1021,7 @@ async def validate_admission_with_attestations(
     violations.extend(deny_hash)
     alerts.extend(alert_hash)
 
+    cel_evaluations: list[dict[str, Any]] = []
     custom_rules = global_spec.get("customRules", []) or []
     if custom_rules:
         try:
@@ -707,6 +1047,20 @@ async def validate_admission_with_attestations(
                 "sbom": sbom_predicate,
             }
             cel_result = evaluate_custom_rules(custom_rules, cel_ctx)
+            cel_evaluations = list(cel_result.evaluations)
+            # Persist celEvaluations to the status subresource *before* any
+            # downstream raise. Otherwise a denying rule would short-circuit
+            # the function with `raise SupplyChainPolicyError(...)` and the
+            # CelEvaluationsTable on the UI would never see why the app was
+            # rejected — exactly when the user needs that diagnostic most.
+            # Uses merge-patch so other attestation fields are preserved.
+            try:
+                _status_patch(
+                    custom, namespace, app_name,
+                    {"attestations": {"celEvaluations": cel_evaluations}},
+                )
+            except ApiException:
+                logger.debug("status.attestations.celEvaluations early-patch failed")
             if cel_result.errors:
                 logger.warning(
                     "CEL evaluation produced errors",
@@ -763,6 +1117,7 @@ async def validate_admission_with_attestations(
             "policyPredicate": policy_predicate,
             "expectedInfraHash": expected_infra_hash,
             "computedInfraHash": computed_infra_hash,
+            "celEvaluations": cel_evaluations,
         },
         "activeViolations": alerts,
         "lastVerified": datetime.now(timezone.utc).isoformat(),
