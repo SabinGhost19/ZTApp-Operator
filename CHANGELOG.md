@@ -1,3 +1,10 @@
+# [1.8.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.7.0...v1.8.0) (2026-05-25)
+
+
+### Features
+
+* structured error taxonomy across operator, backend, SSE and UI ([f93505c](https://github.com/SabinGhost19/ZTApp-Operator/commit/f93505cb96eacabca791e45e9ca7501c719c7b49))
+
 # [1.7.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.6.1...v1.7.0) (2026-05-21)
 
 
