@@ -1,3 +1,10 @@
+## [1.8.3](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.8.2...v1.8.3) (2026-05-25)
+
+
+### Bug Fixes
+
+* **slsa:** use dedicated trustedIssuers list for SLSA attestation verify ([c6f2077](https://github.com/SabinGhost19/ZTApp-Operator/commit/c6f20771666527ebeaa5ede936588e9fec423be8))
+
 ## [1.8.2](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.8.1...v1.8.2) (2026-05-25)
 
 
