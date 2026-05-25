@@ -1,3 +1,10 @@
+## [1.8.1](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.8.0...v1.8.1) (2026-05-25)
+
+
+### Bug Fixes
+
+* **ui:** coerce v-for index to number in ReconcileFlow.vue ([9a17620](https://github.com/SabinGhost19/ZTApp-Operator/commit/9a1762091c5a7157eda1deb08ff92e5c4f8ccd85))
+
 # [1.8.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.7.0...v1.8.0) (2026-05-25)
 
 
