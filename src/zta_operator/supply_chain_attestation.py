@@ -208,11 +208,24 @@ async def _verify_slsa_provenance(
     trusted_issuers: list[str],
     policy: dict[str, Any],
 ) -> list[str]:
-    """Verify SLSA v1.0 provenance attestation.
+    """Verify SLSA provenance attestation.
 
-    Uses cosign `--type slsaprovenance1` (predicate type
-    https://slsa.dev/provenance/v1). Writes
-    status.verifications.slsaProvenance, emits a K8s event for the
+    Accepts both schema versions, in this order:
+      1. SLSA v1.0  — predicate type https://slsa.dev/provenance/v1
+                       (cosign --type slsaprovenance1)
+                       Field layout: predicate.buildDefinition.buildType,
+                                     predicate.runDetails.builder.id
+      2. SLSA v0.2  — predicate type https://slsa.dev/provenance/v0.2
+                       (cosign --type slsaprovenance)
+                       Field layout: predicate.buildType,
+                                     predicate.builder.id
+
+    slsa-github-generator v2.0.0 (container generator) still emits v0.2
+    despite the name "slsa3" referring to the LEVEL not the schema VERSION.
+    Most clusters in the wild will see v0.2 today; fall through to v1 if
+    a future generator version migrates the schema.
+
+    Writes status.verifications.slsaProvenance, emits a K8s event for the
     EventsTimelinePanel, and returns a list of policy violations
     (empty if passed).
     """
@@ -222,15 +235,24 @@ async def _verify_slsa_provenance(
         "SLSA provenance verification started",
         extra={"event": "slsa-attestation-start", "zta_name": app_name, "zta_namespace": namespace, "image": image},
     )
-    try:
-        attestation = await _verify_attestation_by_type(
-            image=image,
-            attestation_type="slsaprovenance1",
-            trusted_issuers=trusted_issuers,
-        )
-    except Exception as exc:
+    attestation: dict[str, Any] | None = None
+    last_exc: Exception | None = None
+    # Try v1 first (newer), then fall back to v0.2 (current generator output).
+    for variant in ("slsaprovenance1", "slsaprovenance"):
+        try:
+            attestation = await _verify_attestation_by_type(
+                image=image,
+                attestation_type=variant,
+                trusted_issuers=trusted_issuers,
+            )
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            continue
+
+    if attestation is None:
         duration_ms = int((time.monotonic() - t0) * 1000)
-        reason = f"slsa-attestation-missing: {exc}"
+        reason = f"slsa-attestation-missing: {last_exc}"
         _record_verification(
             custom, namespace, app_name, "slsaProvenance",
             passed=False, reason=reason, durationMs=duration_ms,
@@ -238,18 +260,21 @@ async def _verify_slsa_provenance(
         logger.warning(
             "SLSA provenance attestation missing or invalid",
             extra={"event": "slsa-attestation-missing", "zta_name": app_name,
-                   "zta_namespace": namespace, "duration_ms": duration_ms, "error": str(exc)},
+                   "zta_namespace": namespace, "duration_ms": duration_ms, "error": str(last_exc)},
         )
         _emit_event(api_client, namespace, app_name,
                     reason="SlsaAttestationMissing", message=reason, event_type="Warning")
         return [reason]
 
     predicate = attestation.get("predicate", {}) or {}
+    # v1 layout: predicate.buildDefinition.buildType, predicate.runDetails.builder.id
     build_def = predicate.get("buildDefinition", {}) or {}
     run_details = predicate.get("runDetails", {}) or {}
-    builder = (run_details.get("builder", {}) or {})
-    build_type = str(build_def.get("buildType", "")).strip()
-    builder_id = str(builder.get("id", "")).strip()
+    builder_v1 = (run_details.get("builder", {}) or {})
+    # v0.2 layout: predicate.buildType, predicate.builder.id (flat).
+    builder_v02 = (predicate.get("builder", {}) or {})
+    build_type = str(build_def.get("buildType", "") or predicate.get("buildType", "")).strip()
+    builder_id = str(builder_v1.get("id", "") or builder_v02.get("id", "")).strip()
 
     failures: list[str] = []
     allowed_build_types = [str(x).strip() for x in (policy.get("allowedBuildTypes", []) or []) if str(x).strip()]
