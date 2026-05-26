@@ -9,6 +9,22 @@ class TalonConfigError(Exception):
     pass
 
 
+class TalonInfrastructureMissingError(TalonConfigError):
+    """Raised when the Falco/Talon stack is not installed in the cluster.
+
+    Distinct from generic TalonConfigError so the reconcile can degrade
+    gracefully (warn + skip + write a structured status field) instead of
+    erroring out the whole admission flow. The Pod is already running by
+    the time we attempt the upsert — runtime enforcement is an *additional*
+    layer, not a precondition.
+    """
+    def __init__(self, message: str, *, missing: list[str]):
+        super().__init__(message)
+        # List of component identifiers the operator could not find,
+        # e.g. ["falco-talon-rules ConfigMap", "falco-talon namespace"].
+        self.missing = list(missing)
+
+
 def _parse_rules_yaml(raw: str) -> tuple[dict | list, list, str]:
     parsed = yaml.safe_load(raw) if raw.strip() else []
     if parsed is None:
@@ -59,6 +75,15 @@ def upsert_talon_rule(core: client.CoreV1Api, app_namespace: str, app_name: str,
     try:
         cm = core.read_namespaced_config_map(name=TALON_CONFIGMAP_NAME, namespace=TALON_NAMESPACE)
     except ApiException as exc:
+        # 404 = the Falco/Talon stack isn't installed. Treat as a soft,
+        # actionable error so the caller can degrade gracefully. Any other
+        # API error (5xx, RBAC, etc.) stays as the generic TalonConfigError.
+        if int(getattr(exc, "status", 0) or 0) == 404:
+            raise TalonInfrastructureMissingError(
+                f"Falco/Talon stack is not installed: "
+                f"ConfigMap {TALON_NAMESPACE}/{TALON_CONFIGMAP_NAME} not found",
+                missing=[f"ConfigMap {TALON_NAMESPACE}/{TALON_CONFIGMAP_NAME}"],
+            ) from exc
         raise TalonConfigError(
             f"Cannot read Talon ConfigMap {TALON_NAMESPACE}/{TALON_CONFIGMAP_NAME}: {exc.reason}"
         ) from exc

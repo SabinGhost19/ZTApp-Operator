@@ -51,7 +51,7 @@ from .supply_chain_attestation import (
     _emit_event as _emit_zta_event,
 )
 from .supply_chain import SupplyChainError, verify_supply_chain
-from .talon import TalonConfigError, delete_talon_rule, upsert_talon_rule
+from .talon import TalonConfigError, TalonInfrastructureMissingError, delete_talon_rule, upsert_talon_rule
 from . import zerotrust_secret  # noqa: F401
 from . import supply_chain_attestation  # noqa: F401
 
@@ -696,10 +696,49 @@ async def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, pat
                 },
             )
 
+        # Default runtime enforcement state: not declared by the spec.
+        runtime_enforcement_status: dict[str, Any] = {
+            "requested": bool(runtime),
+            "installed": None,                 # tri-state: None=unknown, True/False=concrete
+            "talonRulePatched": False,
+            "missing": [],
+            "reason": "",
+        }
         if runtime:
             falco_rule_name = _falco_rule_name(namespace=namespace, name=name)
-            upsert_talon_rule(core=core, app_namespace=namespace, app_name=name, falco_rule_name=falco_rule_name)
-            adapter.info("Patched Talon rules ConfigMap", extra={"event": "talon-configmap-upsert"})
+            try:
+                upsert_talon_rule(core=core, app_namespace=namespace, app_name=name, falco_rule_name=falco_rule_name)
+                adapter.info("Patched Talon rules ConfigMap", extra={"event": "talon-configmap-upsert"})
+                runtime_enforcement_status.update({
+                    "installed": True,
+                    "talonRulePatched": True,
+                })
+            except TalonInfrastructureMissingError as exc:
+                # Falco/Talon stack is not installed. The Pod is already
+                # running by this point — degrade to a clearly-labeled
+                # warning instead of aborting the reconcile. UI surfaces
+                # this state via status.runtimeEnforcement.installed=false.
+                adapter.warning(
+                    "Runtime enforcement infrastructure is not installed in this cluster",
+                    extra={
+                        "event": "runtime-enforcement-infrastructure-missing",
+                        "missing": list(exc.missing),
+                    },
+                )
+                _record_error(
+                    custom, namespace, name,
+                    code="runtime-infrastructure-missing",
+                    message=str(exc),
+                    phase="RuntimeEnforcement",
+                    retryable=False,
+                    details={"missing": list(exc.missing),
+                             "hint": "Install Falco + falco-talon Helm charts to enable Talon-based runtime enforcement."},
+                )
+                runtime_enforcement_status.update({
+                    "installed": False,
+                    "missing": list(exc.missing),
+                    "reason": str(exc),
+                })
 
 
         _status_patch(
@@ -716,6 +755,11 @@ async def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, pat
                 "lastVerified": attestation_status.get("lastVerified"),
                 "provenance": current_status.get("provenance", {}),
                 "details": vulnerability_details,
+                # Runtime enforcement state (Falco+Talon). When the stack
+                # is not installed, installed=false + missing=[...] tells
+                # the UI to render an informational banner rather than a
+                # red error chip.
+                "runtimeEnforcement": runtime_enforcement_status,
                 # Spec hash watermark — next reconcile with the same spec
                 # will short-circuit at the top of _reconcile_impl.
                 "specReconcileHash": spec_hash,

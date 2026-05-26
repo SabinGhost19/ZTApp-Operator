@@ -27,6 +27,15 @@ rules:
   - apiGroups: [ "" ]
     resources: [ "services", "configmaps", "events", "secrets" ]
     verbs: [ "create", "get", "list", "watch", "update", "patch", "delete" ]
+  # events.k8s.io/v1 is a distinct API group from legacy core/v1 events.
+  # The operator emits via client.EventsV1Api (supply_chain_attestation.py:
+  # _emit_event) which targets the new group. Without this rule every call
+  # silently fails with "audit-event-emit-failed" and the UI's
+  # EventsTimelinePanel only shows kopf success/failure rollups instead of
+  # the per-step verification events (CosignVerified, SbomAttestation*, ...).
+  - apiGroups: [ "events.k8s.io" ]
+    resources: [ "events" ]
+    verbs: [ "create", "get", "list", "watch", "patch" ]
   - apiGroups: [ "security.istio.io" ]
     resources: [ "authorizationpolicies" ]
     verbs: [ "create", "get", "list", "watch", "update", "patch", "delete" ]
