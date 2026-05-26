@@ -1,3 +1,10 @@
+## [1.9.1](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.9.0...v1.9.1) (2026-05-26)
+
+
+### Bug Fixes
+
+* **operator:** set TALON_NAMESPACE=falco and fix guac logger name conflict ([a25ea37](https://github.com/SabinGhost19/ZTApp-Operator/commit/a25ea37ae15d2729a71d1cf4b3e3fa42e54642f7))
+
 # [1.9.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.8.4...v1.9.0) (2026-05-26)
 
 
