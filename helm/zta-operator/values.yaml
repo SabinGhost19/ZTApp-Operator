@@ -15,7 +15,7 @@ serviceAccount:
 operator:
   logLevel: INFO
   watchAllNamespaces: true
-  talonNamespace: falco-talon
+  talonNamespace: falco
   talonConfigMapName: falco-talon-rules
   talonConfigMapKey: rules.yaml
   # GUAC ingestion endpoints (official guacsec/guac Helm chart conventions).
@@ -53,8 +53,8 @@ rbac:
   create: true
 
 falcoTalonRbac:
-  enabled: false
-  namespace: falco-talon
+  enabled: true
+  namespace: falco
   configMapName: falco-talon-rules
 
 crd:
