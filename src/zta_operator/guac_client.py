@@ -283,7 +283,7 @@ def _patch_status_sync(namespace: str, app_name: str, ingestion_status: str, mes
             extra={
                 "event": "guac-status-patch-failed",
                 "namespace": namespace,
-                "name": app_name,
+                "app_name": app_name,
                 "error": str(exc)[:200],
             },
         )
