@@ -1,3 +1,10 @@
+# [1.9.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.8.4...v1.9.0) (2026-05-26)
+
+
+### Features
+
+* graceful Falco/Talon missing detection across operator → backend → UI ([dfbbd7b](https://github.com/SabinGhost19/ZTApp-Operator/commit/dfbbd7b94eede4667af162298057d87419303dca))
+
 ## [1.8.4](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.8.3...v1.8.4) (2026-05-25)
 
 
