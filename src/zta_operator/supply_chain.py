@@ -131,6 +131,9 @@ def _collect_findings(
                     "fixedVersion": fixed,
                     "title": str(vuln.get("Title", "") or "")[:160],
                     "target": target,
+                    # Canonical reference Trivy cites for this vuln (usually the
+                    # NVD/GHSA/advisory page); the UI links to it.
+                    "primaryUrl": str(vuln.get("PrimaryURL", "")),
                 })
     return findings, counts
 
