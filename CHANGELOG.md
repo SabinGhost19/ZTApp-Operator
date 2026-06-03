@@ -1,3 +1,10 @@
+# [1.11.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.10.0...v1.11.0) (2026-06-03)
+
+
+### Features
+
+* **dashboard,operator:** surface Trivy CVE detail + fix Talon namespace ([981436c](https://github.com/SabinGhost19/ZTApp-Operator/commit/981436c3e9db445aa61470b3412372d9371a59b8))
+
 # [1.10.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.9.1...v1.10.0) (2026-06-03)
 
 
