@@ -7,11 +7,15 @@ giving administrators a non-Turing-complete but expressive interface for
 ad-hoc rules without learning Rego/OPA.
 
 Each rule receives a uniform context:
-    voucher   — VBBI predicate (build_context, hmac_chain, merkle_tree)
-    image     — resolved OCI reference (string)
-    zta       — ZeroTrustApplication.spec
-    vex       — list of OpenVEX statements parsed for this image
-    sbom      — SBOM predicate (or {} if not attested)
+    voucher      — VBBI predicate (build_context, hmac_chain, merkle_tree)
+    image        — resolved OCI reference (string)
+    zta          — ZeroTrustApplication.spec
+    vex          — list of OpenVEX statements parsed for this image
+    sbom         — SBOM predicate (or {} if not attested)
+    securityScan — security-scan/v1 predicate (gitleaks/checkov/semgrep
+                   aggregate: {summary, findings, metadata, gating}), or {}
+                   if the securityScanPolicy is not enforced / not attested.
+                   e.g. "securityScan.summary.secrets.critical == 0"
 """
 
 from __future__ import annotations

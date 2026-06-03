@@ -415,6 +415,147 @@ async def _verify_openvex_attestation(
     return []
 
 
+SECURITY_SCAN_TYPE = "https://devsecops.licenta.ro/attestations/security-scan/v1"
+
+
+def _highest_severity(counts: dict[str, Any]) -> str:
+    """Highest non-zero severity (UPPER) in a {critical,high,medium,low} block."""
+    for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+        if int(counts.get(sev.lower(), 0) or 0) > 0:
+            return sev
+    return "NONE"
+
+
+def _severity_exceeds(highest: str, max_allowed: str) -> bool:
+    """True if `highest` is strictly above the maximum allowed severity."""
+    h = SEVERITY_ORDER.get(str(highest).upper(), 0)
+    t = SEVERITY_ORDER.get(str(max_allowed or "High").upper(), 3)
+    return h > t
+
+
+async def _verify_security_scan(
+    *,
+    custom: "client.CustomObjectsApi",
+    api_client: client.ApiClient,
+    namespace: str,
+    app_name: str,
+    image: str,
+    trusted_issuers: list[str],
+    policy: dict[str, Any],
+) -> tuple[list[str], dict[str, Any]]:
+    """Verify the signed OSS security-scan attestation (security-scan/v1).
+
+    Aggregates gitleaks (secrets), Semgrep (SAST) and checkov (IaC) results
+    produced in CI. Mirrors the OpenVEX/SLSA verification path: fetch via
+    cosign verify-attestation, parse the predicate, evaluate the policy
+    thresholds, record status.verifications.securityScan and emit a K8s event.
+    Returns (violations, predicate) — the predicate feeds the CEL context so
+    users can write custom rules over securityScan.summary.*.
+    """
+    import time
+    t0 = time.monotonic()
+    logger.info(
+        "Security-scan attestation verification started",
+        extra={"event": "security-scan-start", "zta_name": app_name,
+               "zta_namespace": namespace, "image": image},
+    )
+    require_attestation = bool(policy.get("requireAttestation", True))
+    try:
+        attestation = await _verify_attestation_by_type(
+            image=image,
+            attestation_type=SECURITY_SCAN_TYPE,
+            trusted_issuers=trusted_issuers,
+        )
+    except Exception as exc:
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        if require_attestation:
+            reason = f"security-scan-attestation-missing: {exc}"
+            _record_verification(
+                custom, namespace, app_name, "securityScan",
+                passed=False, reason=reason, durationMs=duration_ms,
+            )
+            _emit_event(api_client, namespace, app_name,
+                        reason="SecurityScanAttestationMissing", message=reason, event_type="Warning")
+            logger.warning(
+                "Security-scan attestation missing or invalid",
+                extra={"event": "security-scan-missing", "zta_name": app_name,
+                       "zta_namespace": namespace, "duration_ms": duration_ms, "error": str(exc)},
+            )
+            return [reason], {}
+        reason = f"security-scan-attestation-missing (non-blocking): {exc}"
+        _record_verification(
+            custom, namespace, app_name, "securityScan",
+            passed=False, reason=reason, durationMs=duration_ms,
+        )
+        _emit_event(api_client, namespace, app_name,
+                    reason="SecurityScanAttestationMissing", message=reason, event_type="Warning")
+        return [], {}
+
+    predicate = attestation.get("predicate", {}) or {}
+    summary = predicate.get("summary", {}) or {}
+    findings = predicate.get("findings", []) or []
+    metadata = predicate.get("metadata", {}) or {}
+    secrets = summary.get("secrets", {}) or {}
+    iac = summary.get("iac", {}) or {}
+    sast = summary.get("sast", {}) or {}
+
+    iac_highest = _highest_severity(iac)
+    sast_highest = _highest_severity(sast)
+    secrets_total = int(secrets.get("total", 0) or 0)
+
+    failures: list[str] = []
+    if bool(policy.get("failOnSecrets", True)) and secrets_total > 0:
+        failures.append(f"security-scan-secrets-found: {secrets_total} secret finding(s)")
+    max_iac = str(policy.get("maxIacSeverity", "High"))
+    if _severity_exceeds(iac_highest, max_iac):
+        failures.append(f"security-scan-iac-severity-exceeded: {iac_highest} > {max_iac}")
+    max_sast = str(policy.get("maxSastSeverity", "High"))
+    if _severity_exceeds(sast_highest, max_sast):
+        failures.append(f"security-scan-sast-severity-exceeded: {sast_highest} > {max_sast}")
+
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    extra = {
+        "durationMs": duration_ms,
+        "digest": _hash_json(predicate),
+        "secretsTotal": secrets_total,
+        "iacHighest": iac_highest,
+        "sastHighest": sast_highest,
+        "findingsCount": len(findings) if isinstance(findings, list) else 0,
+        "commit": str(metadata.get("commit", "")),
+        "gating": str((predicate.get("gating", {}) or {}).get("result", "")),
+    }
+    if failures:
+        reason = "; ".join(failures)
+        _record_verification(
+            custom, namespace, app_name, "securityScan",
+            passed=False, reason=reason, **extra,
+        )
+        _emit_event(api_client, namespace, app_name,
+                    reason="SecurityScanRejected", message=reason, event_type="Warning")
+        logger.warning(
+            "Security-scan attestation rejected",
+            extra={"event": "security-scan-rejected", "zta_name": app_name,
+                   "zta_namespace": namespace, "duration_ms": duration_ms, "failures": failures},
+        )
+        return failures, predicate
+
+    _record_verification(
+        custom, namespace, app_name, "securityScan",
+        passed=True, reason="ok", **extra,
+    )
+    _emit_event(api_client, namespace, app_name,
+                reason="SecurityScanVerified",
+                message=f"secrets={secrets_total}, iac<={iac_highest}, sast<={sast_highest} ({duration_ms} ms)")
+    logger.info(
+        "Security-scan attestation verified",
+        extra={"event": "security-scan-verified", "zta_name": app_name,
+               "zta_namespace": namespace, "duration_ms": duration_ms,
+               "secrets_total": secrets_total, "iac_highest": iac_highest,
+               "sast_highest": sast_highest},
+    )
+    return [], predicate
+
+
 async def _resolve_digest(image: str) -> str:
     if "@sha256:" in image:
         return image
@@ -865,10 +1006,12 @@ async def validate_admission_with_attestations(
     strict_manifest_hash = global_spec.get("strictManifestHash", {}) or {}
     slsa_policy = global_spec.get("slsaProvenancePolicy", {}) or {}
     openvex_policy = global_spec.get("openVexPolicy", {}) or {}
+    security_scan_policy = global_spec.get("securityScanPolicy", {}) or {}
 
     sbom_packages: list[dict[str, str]] = []
     sbom_digest = ""
     sbom_predicate: dict[str, Any] = {}
+    security_scan_predicate: dict[str, Any] = {}
     policy_predicate: dict[str, Any] = {}
     policy_digest = ""
     expected_infra_hash = ""
@@ -1033,9 +1176,26 @@ async def validate_admission_with_attestations(
             policy=openvex_policy,
         )
 
+    security_scan_violations: list[str] = []
+    if bool(security_scan_policy.get("enforceSecurityScan", False)):
+        # The security-scan attestation is signed by the CALLER's CI workflow
+        # (same keyless identity as SBOM/policy attestations), so it uses the
+        # global sourceValidation.trustedIssuers — unlike SLSA, whose signature
+        # comes from the slsa-github-generator reusable workflow.
+        security_scan_violations, security_scan_predicate = await _verify_security_scan(
+            custom=custom,
+            api_client=api_client,
+            namespace=namespace,
+            app_name=app_name,
+            image=resolved_image,
+            trusted_issuers=trusted_issuers,
+            policy=security_scan_policy,
+        )
+
     violations: list[str] = []
     violations.extend(slsa_violations)
     violations.extend(openvex_violations)
+    violations.extend(security_scan_violations)
     alerts: list[str] = []
     violations.extend(_validate_sbom_against_policy(sbom_packages, sbom_policy))
     if policy_predicate:
@@ -1085,6 +1245,7 @@ async def validate_admission_with_attestations(
                 "zta": spec,
                 "vex": vex_ctx,
                 "sbom": sbom_predicate,
+                "securityScan": security_scan_predicate,
             }
             cel_result = evaluate_custom_rules(custom_rules, cel_ctx)
             cel_evaluations = list(cel_result.evaluations)
@@ -1158,6 +1319,10 @@ async def validate_admission_with_attestations(
             "expectedInfraHash": expected_infra_hash,
             "computedInfraHash": computed_infra_hash,
             "celEvaluations": cel_evaluations,
+            "securityScanSummary": (security_scan_predicate.get("summary", {}) or {}),
+            "securityScanFindings": (security_scan_predicate.get("findings", []) or []),
+            "securityScanCommit": str((security_scan_predicate.get("metadata", {}) or {}).get("commit", "")),
+            "securityScanGating": str((security_scan_predicate.get("gating", {}) or {}).get("result", "")),
         },
         "activeViolations": alerts,
         "lastVerified": datetime.now(timezone.utc).isoformat(),

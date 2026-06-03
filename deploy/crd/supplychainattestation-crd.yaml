@@ -139,13 +139,42 @@ spec:
                     requireStatements:
                       type: boolean
                       default: false
+                securityScanPolicy:
+                  type: object
+                  description: |
+                    Enforcement of the signed OSS security-scan attestation
+                    (predicate type
+                    https://devsecops.licenta.ro/attestations/security-scan/v1)
+                    aggregating gitleaks (secrets), checkov (IaC) and Semgrep
+                    (SAST). Signed by the caller's CI workflow, so it is verified
+                    against sourceValidation.trustedIssuers.
+                  properties:
+                    enforceSecurityScan:
+                      type: boolean
+                      default: false
+                    requireAttestation:
+                      type: boolean
+                      default: true
+                    failOnSecrets:
+                      type: boolean
+                      default: true
+                    maxIacSeverity:
+                      type: string
+                      enum: [Low, Medium, High, Critical]
+                      default: High
+                    maxSastSeverity:
+                      type: string
+                      enum: [Low, Medium, High, Critical]
+                      default: High
                 customRules:
                   type: array
                   description: |
                     Dynamic policy rules evaluated by CEL (Common Expression Language).
                     Each expression is evaluated with context:
-                      {voucher, image, zta, vex, sbom}
-                    Example: "voucher.build_context.slsa_level >= 3 && image.startsWith('ghcr.io/')"
+                      {voucher, image, zta, vex, sbom, securityScan}
+                    Examples:
+                      "voucher.build_context.slsa_level >= 3 && image.startsWith('ghcr.io/')"
+                      "securityScan.summary.secrets.critical == 0"
                   items:
                     type: object
                     required: [name, expression, action]

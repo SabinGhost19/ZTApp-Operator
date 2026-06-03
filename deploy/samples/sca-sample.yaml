@@ -5,8 +5,17 @@ metadata:
 spec:
   sourceValidation:
     enforceCosign: true
+    # Pipeline split into per-job reusable workflows: cosign keyless runs inside
+    # each job-*.yml, so the Fulcio certificate SAN is that file's path, not
+    # ci-cd.yaml. The operator loops over this list (OR semantics), so both new
+    # identities are listed: attestations are signed by job-attestations.yml,
+    # the image signature by job-sign-verify.yml.
     trustedIssuers:
-      - https://github.com/SabinGhost19/vulfastapi/.github/workflows/ci-cd.yaml@refs/heads/main
+      - https://github.com/SabinGhost19/vulfastapi/.github/workflows/job-attestations.yml@refs/heads/main
+      - https://github.com/SabinGhost19/vulfastapi/.github/workflows/job-sign-verify.yml@refs/heads/main
+      # Legacy monolithic identity (unused by demo-app once the split pipeline
+      # has run; kept commented for backward-compat reference):
+      # - https://github.com/SabinGhost19/vulfastapi/.github/workflows/ci-cd.yaml@refs/heads/main
   provenance:
     requireVoucher: true
     enforceHmacChain: true
@@ -24,9 +33,25 @@ spec:
   policyBinding:
     enabled: true
     requireAttestationType: https://devsecops.licenta.ro/attestations/custom-zta-policy/v1
+  # OSS "Snyk-style" security-scan attestation (security-scan/v1): gitleaks
+  # (secrets) + checkov (IaC) + Semgrep (SAST), produced inside job-attestations.yml
+  # (so it verifies against the same sourceValidation.trustedIssuers above).
+  securityScanPolicy:
+    enforceSecurityScan: true
+    requireAttestation: true
+    failOnSecrets: true
+    maxIacSeverity: High
+    maxSastSeverity: High
   strictManifestHash:
     enabled: true
     enforcementAction: Reject
+  # Example CEL rule over the security-scan summary (defense in depth on top of
+  # securityScanPolicy): require zero critical secrets in source.
+  customRules:
+    - name: no-critical-secrets
+      description: Reject if any critical secret was detected in source.
+      expression: "securityScan.summary.secrets.critical == 0"
+      action: Allow
   runtimeEnforcement:
     enabled: true
     onPolicyDrift: Isolate
