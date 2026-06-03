@@ -476,6 +476,9 @@ async def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, pat
                 highest=(result.details or {}).get("highest"),
                 threshold=(result.details or {}).get("threshold"),
                 vexExempted=(result.details or {}).get("vexExempted"),
+                # CVE-level detail so the UI can show exactly what failed and why.
+                counts=(result.details or {}).get("counts"),
+                findings=(result.details or {}).get("findings"),
             )
             if result.success:
                 adapter.info(

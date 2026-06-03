@@ -98,6 +98,43 @@ def _has_fixable_vulnerabilities(payload: dict[str, Any]) -> bool:
     return False
 
 
+def _collect_findings(
+    payload: dict[str, Any],
+    *,
+    fixable_only: bool = False,
+    min_severity: str | None = None,
+    limit: int = 25,
+) -> tuple[list[dict[str, str]], dict[str, int]]:
+    """Extract a capped, UI-friendly list of vulnerabilities plus a per-severity
+    count. `fixable_only` keeps only vulns with a FixedVersion; `min_severity`
+    keeps only vulns at/above that severity (used for threshold breaches)."""
+    floor = SEVERITY_ORDER.get(str(min_severity).upper(), 0) if min_severity else 0
+    findings: list[dict[str, str]] = []
+    counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    for section in payload.get("Results", []) or []:
+        target = str(section.get("Target", ""))
+        for vuln in section.get("Vulnerabilities", []) or []:
+            sev = str(vuln.get("Severity", "")).upper()
+            if sev in counts:
+                counts[sev] += 1
+            fixed = str(vuln.get("FixedVersion", "")).strip()
+            if fixable_only and not fixed:
+                continue
+            if floor and SEVERITY_ORDER.get(sev, 0) < floor:
+                continue
+            if len(findings) < limit:
+                findings.append({
+                    "id": str(vuln.get("VulnerabilityID", "")),
+                    "pkg": str(vuln.get("PkgName", "")),
+                    "severity": sev,
+                    "installed": str(vuln.get("InstalledVersion", "")),
+                    "fixedVersion": fixed,
+                    "title": str(vuln.get("Title", "") or "")[:160],
+                    "target": target,
+                })
+    return findings, counts
+
+
 async def verify_trivy_threshold(
     image: str,
     max_vulnerabilities: str,
@@ -130,10 +167,18 @@ async def verify_trivy_threshold(
 
     highest = _max_found_severity(payload)
     if fail_on_fixable and _has_fixable_vulnerabilities(payload):
+        findings, counts = _collect_findings(payload, fixable_only=True)
         return VerificationResult(
             success=False,
             reason="trivy-fixable-vulnerability-found",
-            details={"threshold": threshold, "failOnFixable": True},
+            details={
+                "threshold": threshold,
+                "failOnFixable": True,
+                "highest": highest or "NONE",
+                "counts": counts,
+                "findings": findings,
+                "vexExempted": exempted_cves,
+            },
         )
 
     if highest is None:
@@ -144,10 +189,17 @@ async def verify_trivy_threshold(
         )
 
     if SEVERITY_ORDER[highest] > SEVERITY_ORDER[threshold]:
+        findings, counts = _collect_findings(payload, min_severity=threshold)
         return VerificationResult(
             success=False,
             reason="trivy-threshold-exceeded",
-            details={"highest": highest, "threshold": threshold, "vexExempted": exempted_cves},
+            details={
+                "highest": highest,
+                "threshold": threshold,
+                "counts": counts,
+                "findings": findings,
+                "vexExempted": exempted_cves,
+            },
         )
 
     return VerificationResult(

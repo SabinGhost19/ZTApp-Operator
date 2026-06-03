@@ -149,6 +149,19 @@ spec:
                   x-kubernetes-preserve-unknown-fields: true
                 details:
                   x-kubernetes-preserve-unknown-fields: true
+                # Per-check verification ledger written by the operator
+                # (cosign, trivy, sbom, policyAttestation, slsaProvenance,
+                # openvex, securityScan). Each entry: { passed, reason,
+                # completedAt, ...extra }. The UI reads these directly.
+                verifications:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                # Ring-buffer of recent reconcile errors written by the operator.
+                errors:
+                  type: array
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
                 # Async telemetry sub-status: the main `phase` flips to
                 # Running as soon as the Deployment is created, while
                 # guacIngestionStatus tracks the slow OCI->GUAC pull on
