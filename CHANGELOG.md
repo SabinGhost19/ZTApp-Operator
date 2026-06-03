@@ -1,3 +1,10 @@
+# [1.10.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.9.1...v1.10.0) (2026-06-03)
+
+
+### Features
+
+* **supply-chain:** add OSS Snyk-style security-scan attestation flow ([201cd45](https://github.com/SabinGhost19/ZTApp-Operator/commit/201cd452f15756a951548155c44d7e6e3727a7a8))
+
 ## [1.9.1](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.9.0...v1.9.1) (2026-05-26)
 
 
