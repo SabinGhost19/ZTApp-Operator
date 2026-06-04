@@ -103,7 +103,7 @@ def _collect_findings(
     *,
     fixable_only: bool = False,
     min_severity: str | None = None,
-    limit: int = 25,
+    limit: int = 300,
 ) -> tuple[list[dict[str, str]], dict[str, int]]:
     """Extract a capped, UI-friendly list of vulnerabilities plus a per-severity
     count. `fixable_only` keeps only vulns with a FixedVersion; `min_severity`
@@ -170,7 +170,9 @@ async def verify_trivy_threshold(
 
     highest = _max_found_severity(payload)
     if fail_on_fixable and _has_fixable_vulnerabilities(payload):
-        findings, counts = _collect_findings(payload, fixable_only=True)
+        # Record EVERY detected vuln (fixable ones are flagged via fixedVersion)
+        # so the UI dropdown can list the full Trivy result, not just the trigger.
+        findings, counts = _collect_findings(payload)
         return VerificationResult(
             success=False,
             reason="trivy-fixable-vulnerability-found",
@@ -192,7 +194,8 @@ async def verify_trivy_threshold(
         )
 
     if SEVERITY_ORDER[highest] > SEVERITY_ORDER[threshold]:
-        findings, counts = _collect_findings(payload, min_severity=threshold)
+        # Record ALL detected vulns (full Trivy result) for the UI dropdown.
+        findings, counts = _collect_findings(payload)
         return VerificationResult(
             success=False,
             reason="trivy-threshold-exceeded",
