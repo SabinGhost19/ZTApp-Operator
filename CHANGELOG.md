@@ -1,3 +1,15 @@
+# [1.12.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.11.0...v1.12.0) (2026-06-04)
+
+
+### Bug Fixes
+
+* **dashboard:** factual audit-alert cause + fix drift header overlap ([52038b5](https://github.com/SabinGhost19/ZTApp-Operator/commit/52038b53ac9af6fc2678af97c5702eb4547776fe))
+
+
+### Features
+
+* **dashboard,operator:** surface Trivy CVE detail + fix Talon namespace ([17a13a1](https://github.com/SabinGhost19/ZTApp-Operator/commit/17a13a19916532969d57b1043d50d3f273829dfb))
+
 # [1.11.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.10.0...v1.11.0) (2026-06-03)
 
 
