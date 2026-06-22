@@ -1,3 +1,10 @@
+# [1.13.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.12.0...v1.13.0) (2026-06-22)
+
+
+### Features
+
+* **zts:** real sync-verified status, hard trust-revocation, multi-container ([9eb1113](https://github.com/SabinGhost19/ZTApp-Operator/commit/9eb1113278a674e6bf8d0239a6624b7356a3c49b))
+
 # [1.12.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.11.0...v1.12.0) (2026-06-04)
 
 
