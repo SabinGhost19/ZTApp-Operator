@@ -19,6 +19,8 @@ webhooks:
     rules:
       - apiGroups: ["devsecops.licenta.ro"]
         apiVersions: ["v1"]
-        resources: ["zerotrustapplications"]
+        # The /validate handler dispatches on object kind (ZeroTrustApplication
+        # vs ZeroTrustSecret); both share this synchronous admission gate.
+        resources: ["zerotrustapplications", "zerotrustsecrets"]
         operations: ["CREATE", "UPDATE"]
         scope: Namespaced

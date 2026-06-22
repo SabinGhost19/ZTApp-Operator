@@ -63,10 +63,23 @@ def _record_verification(
 Chei stabile populate: `cosign`, `trivy`, `sbom`, `policyAttestation`,
 `slsaProvenance`, `openvex`. Fiecare entry are minim `{passed, reason,
 completedAt, durationMs}`; extra fields per check (ex. `sbom.digest`,
-`slsaProvenance.builderId`).
+`slsaProvenance.builderId`). În particular **`trivy`** poartă și
+`{highest, threshold, vexExempted, counts, findings}` — detaliul CVE-level
+(`counts` = contor per severitate, `findings` = listă capată la 300 de
+vulnerabilități cu `{id, pkg, severity, installed, fixedVersion, title,
+target, primaryUrl}`), ca UI-ul să arate exact ce a picat. Schema completă în
+`18-status-fields-reference.md` §18.3.
 
 Merge-patch garantează că scrierea unei chei (`{"verifications": {"cosign":
 {...}}}`) **nu** șterge celelalte (sbom, trivy, etc.).
+
+### `status.runtimeEnforcement` (obiect)
+
+Pe lângă `verifications`/`errors`, operatorul scrie și starea enforcement-ului
+runtime Falco+Talon ca obiect dedicat: `{requested, installed (tri-state),
+talonRulePatched, missing[], reason}`. Când stack-ul lipsește se înregistrează
+și eroarea `runtime-infrastructure-missing` (vezi `_record_error`,
+`phase="RuntimeEnforcement"`). Schema completă în `18` §18.3.
 
 ### `status.errors[]` (ring buffer)
 

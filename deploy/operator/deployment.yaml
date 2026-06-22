@@ -1,3 +1,6 @@
+# NOTE: this raw deploy/ manifest is DEV-ONLY. The authoritative install is the
+# Helm chart under zta-operator/helm/zta-operator (used by infra-tools/GitOps),
+# which targets the `falco` namespace for Talon. Keep this file in sync with it.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -53,7 +56,7 @@ spec:
             - name: LOG_LEVEL
               value: INFO
             - name: TALON_NAMESPACE
-              value: falco-talon
+              value: falco   # Talon runs in ns `falco` (see helm-release-talon.yaml)
             - name: TALON_CONFIGMAP_NAME
               value: falco-talon-rules
             - name: TALON_CONFIGMAP_KEY

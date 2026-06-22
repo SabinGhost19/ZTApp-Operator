@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 import kopf
@@ -14,6 +15,7 @@ from .config import (
     EXTERNAL_SECRETS_VERSION,
     GROUP,
     VERSION,
+    ZTS_HEALTH_INTERVAL,
     ZTS_KIND,
     ZTS_LABEL_NAME,
     ZTS_LABEL_NAMESPACE,
@@ -30,6 +32,46 @@ class ZeroTrustSecretError(Exception):
     pass
 
 
+# (connect, read) timeouts on every synchronous K8s call so a stalled API server
+# can't block a reconcile/timer thread forever (kopf's async timeout does not
+# cover the blocking kubernetes-client I/O).
+_K8S_TIMEOUT = (3.05, 10)
+
+# Status phases written to .status.phase.
+_PHASE_VALIDATING = "Validating"
+_PHASE_PROVISIONING = "Provisioning"
+_PHASE_RUNNING = "Running"
+_PHASE_DEGRADED = "Degraded"
+_PHASE_BLOCKED = "BlockedBySecurity"
+
+# Condition types surfaced on .status.conditions[] (K8s-style conditions).
+_COND_TRUSTED = "Trusted"  # target ZeroTrustApplication still satisfies the trust gate
+_COND_SYNCED = "Synced"    # backing ExternalSecret reports a successful Vault sync
+_COND_READY = "Ready"      # ZTS fully provisioned AND the target K8s Secret exists
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _condition(cond_type: str, ok: bool, reason: str, message: str, existing: list[dict] | None) -> dict:
+    """Build one status condition, preserving lastTransitionTime when the
+    boolean state is unchanged (so transition timestamps stay meaningful)."""
+    status = "True" if ok else "False"
+    prev = next((c for c in (existing or []) if c.get("type") == cond_type), None)
+    if prev and prev.get("status") == status and prev.get("lastTransitionTime"):
+        last_transition = prev["lastTransitionTime"]
+    else:
+        last_transition = _now_iso()
+    return {
+        "type": cond_type,
+        "status": status,
+        "reason": reason or "",
+        "message": (message or "")[:512],
+        "lastTransitionTime": last_transition,
+    }
+
+
 def _zts_status_patch(custom: client.CustomObjectsApi, namespace: str, name: str, patch: dict[str, Any]) -> None:
     custom.patch_namespaced_custom_object_status(
         group=GROUP,
@@ -38,6 +80,7 @@ def _zts_status_patch(custom: client.CustomObjectsApi, namespace: str, name: str
         plural=ZTS_PLURAL,
         name=name,
         body={"status": patch},
+        _request_timeout=_K8S_TIMEOUT,
     )
 
 
@@ -72,6 +115,10 @@ def _volume_name(zts_name: str, local_key: str, index: int) -> str:
     return base[:63]
 
 
+def _target_secret_name(zts_name: str, spec: dict) -> str:
+    return str(spec.get("targetSecretName", zts_name)).strip() or zts_name
+
+
 def _build_external_secret(
     zts_name: str,
     namespace: str,
@@ -91,7 +138,7 @@ def _build_external_secret(
     if not mapping:
         raise ZeroTrustSecretError("spec.secretData.mapping must contain at least one item")
 
-    target_secret_name = str(spec.get("targetSecretName", zts_name)).strip() or zts_name
+    target_secret_name = _target_secret_name(zts_name, spec)
 
     data_entries = []
     for item in mapping:
@@ -153,6 +200,22 @@ def _build_external_secret(
     return external_secret, target_secret_name
 
 
+def _read_workload(
+    kind: str,
+    namespace: str,
+    name: str,
+    apps: client.AppsV1Api,
+    api_client: client.ApiClient,
+) -> dict:
+    if kind == "Deployment":
+        obj = apps.read_namespaced_deployment(name=name, namespace=namespace, _request_timeout=_K8S_TIMEOUT)
+    elif kind == "StatefulSet":
+        obj = apps.read_namespaced_stateful_set(name=name, namespace=namespace, _request_timeout=_K8S_TIMEOUT)
+    else:
+        obj = apps.read_namespaced_daemon_set(name=name, namespace=namespace, _request_timeout=_K8S_TIMEOUT)
+    return api_client.sanitize_for_serialization(obj)
+
+
 def _get_target(
     namespace: str,
     target_workload: dict,
@@ -168,23 +231,16 @@ def _get_target(
     if not name:
         raise ZeroTrustSecretError("targetWorkload.name is required")
 
-    if kind == "Deployment":
-        obj = apps.read_namespaced_deployment(name=name, namespace=workload_ns)
-    elif kind == "StatefulSet":
-        obj = apps.read_namespaced_stateful_set(name=name, namespace=workload_ns)
-    else:
-        obj = apps.read_namespaced_daemon_set(name=name, namespace=workload_ns)
-
-    return kind, workload_ns, api_client.sanitize_for_serialization(obj)
+    return kind, workload_ns, _read_workload(kind, workload_ns, name, apps, api_client)
 
 
 def _patch_target(kind: str, namespace: str, name: str, patch_body: dict, apps: client.AppsV1Api) -> None:
     if kind == "Deployment":
-        apps.patch_namespaced_deployment(name=name, namespace=namespace, body=patch_body)
+        apps.patch_namespaced_deployment(name=name, namespace=namespace, body=patch_body, _request_timeout=_K8S_TIMEOUT)
     elif kind == "StatefulSet":
-        apps.patch_namespaced_stateful_set(name=name, namespace=namespace, body=patch_body)
+        apps.patch_namespaced_stateful_set(name=name, namespace=namespace, body=patch_body, _request_timeout=_K8S_TIMEOUT)
     else:
-        apps.patch_namespaced_daemon_set(name=name, namespace=namespace, body=patch_body)
+        apps.patch_namespaced_daemon_set(name=name, namespace=namespace, body=patch_body, _request_timeout=_K8S_TIMEOUT)
 
 
 def _inject_mapping_to_workload(
@@ -194,26 +250,46 @@ def _inject_mapping_to_workload(
     target_kind: str,
     target_namespace: str,
     target_name: str,
-    target_obj: dict,
     apps: client.AppsV1Api,
+    api_client: client.ApiClient,
 ) -> None:
+    # Re-read the workload immediately before patching to shrink the
+    # read-modify-write window (validation + ExternalSecret upsert happen between
+    # the reconcile's first read and this point). A concurrent writer's additions
+    # survive: the strategic-merge patch below merges containers/env by name and
+    # only touches the containers we inject into.
+    target_obj = _read_workload(target_kind, target_namespace, target_name, apps, api_client)
     pod_spec = target_obj["spec"]["template"].get("spec", {})
     containers = pod_spec.get("containers", [])
     if not containers:
         raise ZeroTrustSecretError("Target workload has no containers")
 
-    first_container = containers[0]
-    container_name = first_container.get("name")
-    if not container_name:
+    default_container = containers[0].get("name")
+    if not default_container:
         raise ZeroTrustSecretError("Target workload first container has no name")
 
-    env = first_container.get("env", []) or []
-    volume_mounts = first_container.get("volumeMounts", []) or []
+    by_name = {c.get("name"): c for c in containers if c.get("name")}
     volumes = pod_spec.get("volumes", []) or []
+    touched: set[str] = set()
 
     for index, item in enumerate(mapping):
         local_key = str(item.get("localKey", "")).strip()
         value_type = str(item.get("type", "")).strip()
+        container_name = str(item.get("containerName", "")).strip() or default_container
+
+        container = by_name.get(container_name)
+        if container is None:
+            raise ZeroTrustSecretError(
+                f"Target container {container_name!r} not found in workload {target_name}"
+            )
+        touched.add(container_name)
+
+        if container.get("env") is None:
+            container["env"] = []
+        env = container["env"]
+        if container.get("volumeMounts") is None:
+            container["volumeMounts"] = []
+        volume_mounts = container["volumeMounts"]
 
         if value_type == "EnvVar":
             desired_env = {
@@ -268,19 +344,22 @@ def _inject_mapping_to_workload(
     injected_marker_key = f"zta.devsecops/injected-{_sanitize_name(zts_name)}"
     annotations[injected_marker_key] = "true"
 
+    patch_containers = [
+        {
+            "name": cn,
+            "env": by_name[cn].get("env", []),
+            "volumeMounts": by_name[cn].get("volumeMounts", []),
+        }
+        for cn in sorted(touched)
+    ]
+
     patch_body = {
         "spec": {
             "template": {
                 "metadata": {"annotations": annotations},
                 "spec": {
                     "volumes": volumes,
-                    "containers": [
-                        {
-                            "name": container_name,
-                            "env": env,
-                            "volumeMounts": volume_mounts,
-                        }
-                    ],
+                    "containers": patch_containers,
                 },
             }
         }
@@ -305,20 +384,19 @@ def _resolve_application_reference(namespace: str, spec: dict) -> tuple[str, str
     raise ZeroTrustSecretError("applicationRef.name or targetWorkload.name is required")
 
 
-def _validate_zero_trust_conditions(namespace: str, spec: dict, ztc: dict, custom: client.CustomObjectsApi) -> None:
-    if not ztc:
-        return
+def _check_trust(custom: client.CustomObjectsApi, namespace: str, spec: dict) -> tuple[bool, bool, str]:
+    """Non-raising trust evaluation shared by the admission-time validator and
+    the periodic re-evaluator.
+
+    Returns (require_verified, trusted, detail). Raises only on a non-404 K8s API
+    error reading the ZeroTrustApplication.
+    """
+    ztc = spec.get("zeroTrustConditions", {}) or {}
+    require_verified = bool(ztc.get("requireVerifiedStatus", False))
+    if not require_verified:
+        return False, True, "trust gating disabled"
 
     target_name, target_namespace = _resolve_application_reference(namespace=namespace, spec=spec)
-
-    if ztc.get("timeBasedAccess", {}).get("enabled", False):
-        raise ZeroTrustSecretError("timeBasedAccess.enabled=true is not implemented in this version")
-
-    require_verified = bool(ztc.get("requireVerifiedStatus", False))
-
-    if not require_verified:
-        return
-
     try:
         zta = custom.get_namespaced_custom_object(
             group=GROUP,
@@ -326,20 +404,34 @@ def _validate_zero_trust_conditions(namespace: str, spec: dict, ztc: dict, custo
             namespace=target_namespace,
             plural="zerotrustapplications",
             name=target_name,
+            _request_timeout=_K8S_TIMEOUT,
         )
     except ApiException as exc:
         if exc.status == 404:
-            raise ZeroTrustSecretError(
-                f"No ZeroTrustApplication found for target workload {target_namespace}/{target_name}"
-            ) from exc
+            return True, False, f"No ZeroTrustApplication found for target workload {target_namespace}/{target_name}"
         raise
 
-    zta_status = zta.get("status", {}) or {}
-
-    trust_level = str(zta_status.get("trustLevel", "Untrusted") or "Untrusted")
+    trust_level = str((zta.get("status", {}) or {}).get("trustLevel", "Untrusted") or "Untrusted")
     if trust_level != "Verified":
+        return True, False, f"target ZeroTrustApplication trustLevel is {trust_level}"
+    return True, True, "Verified"
+
+
+def _validate_zero_trust_conditions(namespace: str, spec: dict, ztc: dict, custom: client.CustomObjectsApi) -> None:
+    if not ztc:
+        return
+
+    if ztc.get("timeBasedAccess", {}).get("enabled", False):
+        raise ZeroTrustSecretError("timeBasedAccess.enabled=true is not implemented in this version")
+
+    require_verified, trusted, detail = _check_trust(custom, namespace, spec)
+    if require_verified and not trusted:
+        # A missing ZTA is a configuration error (Degraded); a present-but-untrusted
+        # ZTA is an explicit security block (BlockedBySecurity).
+        if detail.startswith("No ZeroTrustApplication"):
+            raise ZeroTrustSecretError(detail)
         raise ZeroTrustSecretError(
-            f"BlockedBySecurity: requireVerifiedStatus=true but target ZeroTrustApplication trustLevel is {trust_level}"
+            f"BlockedBySecurity: requireVerifiedStatus=true but {detail}"
         )
 
 
@@ -352,6 +444,7 @@ def _upsert_external_secret(custom: client.CustomObjectsApi, namespace: str, ext
             namespace=namespace,
             plural=EXTERNAL_SECRETS_PLURAL,
             name=name,
+            _request_timeout=_K8S_TIMEOUT,
         )
         custom.patch_namespaced_custom_object(
             group=EXTERNAL_SECRETS_GROUP,
@@ -360,6 +453,7 @@ def _upsert_external_secret(custom: client.CustomObjectsApi, namespace: str, ext
             plural=EXTERNAL_SECRETS_PLURAL,
             name=name,
             body=external_secret,
+            _request_timeout=_K8S_TIMEOUT,
         )
     except ApiException as exc:
         if exc.status != 404:
@@ -370,7 +464,139 @@ def _upsert_external_secret(custom: client.CustomObjectsApi, namespace: str, ext
             namespace=namespace,
             plural=EXTERNAL_SECRETS_PLURAL,
             body=external_secret,
+            _request_timeout=_K8S_TIMEOUT,
         )
+
+
+def _delete_external_secret(custom: client.CustomObjectsApi, namespace: str, name: str) -> bool:
+    """Delete the backing ExternalSecret (hard revoke). ESO cascade-deletes the
+    K8s Secret it owns (target.creationPolicy=Owner). Idempotent: a missing ES is
+    treated as already-revoked."""
+    try:
+        custom.delete_namespaced_custom_object(
+            group=EXTERNAL_SECRETS_GROUP,
+            version=EXTERNAL_SECRETS_VERSION,
+            namespace=namespace,
+            plural=EXTERNAL_SECRETS_PLURAL,
+            name=name,
+            _request_timeout=_K8S_TIMEOUT,
+        )
+        return True
+    except ApiException as exc:
+        if exc.status == 404:
+            return False
+        raise
+
+
+def _external_secret_ready(custom: client.CustomObjectsApi, namespace: str, name: str) -> tuple[bool | None, str, str]:
+    """Read the backing ExternalSecret's Ready condition.
+
+    Returns (ready, reason, message): ready is True/False, or None when the ES is
+    missing or has not published a Ready condition yet (still settling)."""
+    try:
+        es = custom.get_namespaced_custom_object(
+            group=EXTERNAL_SECRETS_GROUP,
+            version=EXTERNAL_SECRETS_VERSION,
+            namespace=namespace,
+            plural=EXTERNAL_SECRETS_PLURAL,
+            name=name,
+            _request_timeout=_K8S_TIMEOUT,
+        )
+    except ApiException as exc:
+        if exc.status == 404:
+            return None, "Missing", "Backing ExternalSecret not found"
+        raise
+
+    conditions = (es.get("status", {}) or {}).get("conditions", []) or []
+    ready = next((c for c in conditions if c.get("type") == "Ready"), None)
+    if not ready:
+        return None, "Pending", "ExternalSecret has no Ready condition yet"
+    is_ready = str(ready.get("status", "")).strip() == "True"
+    return is_ready, str(ready.get("reason", "") or ""), str(ready.get("message", "") or "")
+
+
+def _secret_exists(core: client.CoreV1Api, namespace: str, name: str) -> bool:
+    try:
+        core.read_namespaced_secret(name=name, namespace=namespace, _request_timeout=_K8S_TIMEOUT)
+        return True
+    except ApiException as exc:
+        if exc.status == 404:
+            return False
+        raise
+
+
+def _evaluate_status(
+    custom: client.CustomObjectsApi,
+    core: client.CoreV1Api,
+    namespace: str,
+    name: str,
+    spec: dict,
+    existing_conditions: list[dict] | None,
+) -> dict:
+    """Compute the real ZTS status from live cluster state — never a blind 'Running'.
+
+    Order matters (zero-trust): trust is evaluated first. On trust loss while
+    requireVerifiedStatus is set, the backing ExternalSecret is deleted (hard
+    revoke → ESO cascade-deletes the K8s Secret) and the phase becomes
+    BlockedBySecurity. Otherwise the phase reflects whether ESO actually synced
+    the value from Vault (ExternalSecret Ready condition) AND whether the target
+    K8s Secret exists. A ZTS pointing at a non-existent Vault path therefore
+    surfaces as Degraded with an actionable lastError instead of false-healthy.
+
+    Returns a status patch dict; may delete the ExternalSecret as a side effect.
+    """
+    target_secret = _target_secret_name(name, spec)
+    require_verified, trusted, trust_detail = _check_trust(custom, namespace, spec)
+
+    if require_verified and not trusted:
+        _delete_external_secret(custom, namespace, name)
+        return {
+            "phase": _PHASE_BLOCKED,
+            "lastError": f"BlockedBySecurity: {trust_detail}",
+            "targetSecretName": target_secret,
+            "conditions": [
+                _condition(_COND_TRUSTED, False, "TrustLost", trust_detail, existing_conditions),
+                _condition(_COND_SYNCED, False, "Revoked", "ExternalSecret deleted due to trust loss", existing_conditions),
+                _condition(_COND_READY, False, "Revoked", "Secret access revoked", existing_conditions),
+            ],
+        }
+
+    ready, reason, message = _external_secret_ready(custom, namespace, name)
+    secret_present = _secret_exists(core, namespace, target_secret)
+
+    trusted_cond = _condition(
+        _COND_TRUSTED, True, "Verified" if require_verified else "NotRequired", trust_detail, existing_conditions
+    )
+
+    if ready is True and secret_present:
+        phase, last_error = _PHASE_RUNNING, ""
+        synced_cond = _condition(_COND_SYNCED, True, reason or "SecretSynced", message or "Synced from Vault", existing_conditions)
+        ready_cond = _condition(_COND_READY, True, "SecretAvailable", f"Secret {target_secret} present and synced", existing_conditions)
+    elif ready is True and not secret_present:
+        phase, last_error = _PHASE_PROVISIONING, ""
+        synced_cond = _condition(_COND_SYNCED, True, reason or "SecretSynced", message, existing_conditions)
+        ready_cond = _condition(_COND_READY, False, "SecretPending", f"ExternalSecret ready but Secret {target_secret} not present yet", existing_conditions)
+    elif ready is False:
+        phase = _PHASE_DEGRADED
+        last_error = f"ExternalSecret sync failing ({reason}): {message}".strip()
+        synced_cond = _condition(_COND_SYNCED, False, reason or "SecretSyncError", message, existing_conditions)
+        ready_cond = _condition(_COND_READY, False, "SyncError", last_error, existing_conditions)
+    elif reason == "Missing":
+        phase = _PHASE_DEGRADED
+        last_error = "Backing ExternalSecret is missing — re-apply the ZeroTrustSecret to re-provision"
+        synced_cond = _condition(_COND_SYNCED, False, "Missing", last_error, existing_conditions)
+        ready_cond = _condition(_COND_READY, False, "Missing", last_error, existing_conditions)
+    else:  # ready is None, still settling (no Ready condition published yet)
+        phase, last_error = _PHASE_PROVISIONING, ""
+        synced_cond = _condition(_COND_SYNCED, False, "Pending", message or "Awaiting first ESO sync", existing_conditions)
+        ready_cond = _condition(_COND_READY, False, "Provisioning", "Awaiting ExternalSecret sync from Vault", existing_conditions)
+
+    return {
+        "phase": phase,
+        "lastError": last_error,
+        "targetSecretName": target_secret,
+        "conditions": [trusted_cond, synced_cond, ready_cond],
+    }
 
 
 def _checksum_secret_data(secret_obj: dict) -> str:
@@ -388,18 +614,7 @@ def _apply_rolling_restart_annotation(
     zts_name: str,
     checksum: str,
 ) -> None:
-    if target_kind == "Deployment":
-        target_obj = api_client.sanitize_for_serialization(
-            apps.read_namespaced_deployment(name=target_name, namespace=target_namespace)
-        )
-    elif target_kind == "StatefulSet":
-        target_obj = api_client.sanitize_for_serialization(
-            apps.read_namespaced_stateful_set(name=target_name, namespace=target_namespace)
-        )
-    else:
-        target_obj = api_client.sanitize_for_serialization(
-            apps.read_namespaced_daemon_set(name=target_name, namespace=target_namespace)
-        )
+    target_obj = _read_workload(target_kind, target_namespace, target_name, apps, api_client)
 
     annotations = target_obj["spec"]["template"].get("metadata", {}).get("annotations", {}) or {}
     annotations[f"vault-secret-checksum/{_sanitize_name(zts_name)}"] = checksum
@@ -418,7 +633,7 @@ def _apply_rolling_restart_annotation(
 
 @kopf.on.create(GROUP, VERSION, ZTS_PLURAL)
 @kopf.on.update(GROUP, VERSION, ZTS_PLURAL)
-def reconcile_zerotrust_secret(spec: dict, name: str, namespace: str, body: dict, **_: Any) -> None:
+def reconcile_zerotrust_secret(spec: dict, name: str, namespace: str, body: dict, status: dict | None = None, **_: Any) -> None:
     reconcile_id = new_reconcile_id()
     uid = body.get("metadata", {}).get("uid", "unknown")
     adapter = logging.LoggerAdapter(
@@ -426,15 +641,18 @@ def reconcile_zerotrust_secret(spec: dict, name: str, namespace: str, body: dict
         ctx(name=name, namespace=namespace, uid=uid, reconcile_id=reconcile_id, phase="Validating"),
     )
 
+    existing_conditions = (status or {}).get("conditions", [])
+
     api_client = client.ApiClient()
     custom = client.CustomObjectsApi(api_client)
     apps = client.AppsV1Api(api_client)
+    core = client.CoreV1Api(api_client)
 
     try:
-        _zts_status_patch(custom, namespace, name, {"phase": "Validating", "lastError": ""})
+        _zts_status_patch(custom, namespace, name, {"phase": _PHASE_VALIDATING, "lastError": ""})
 
         target_workload = spec.get("targetWorkload", {}) or {}
-        target_kind, target_namespace, target_obj = _get_target(
+        target_kind, target_namespace, _target_obj = _get_target(
             namespace=namespace,
             target_workload=target_workload,
             apps=apps,
@@ -453,7 +671,7 @@ def reconcile_zerotrust_secret(spec: dict, name: str, namespace: str, body: dict
             owner=owner,
         )
 
-        _zts_status_patch(custom, namespace, name, {"phase": "Provisioning", "lastError": ""})
+        _zts_status_patch(custom, namespace, name, {"phase": _PHASE_PROVISIONING, "lastError": ""})
         _upsert_external_secret(custom=custom, namespace=namespace, external_secret=external_secret)
         adapter.info(
             "Applied ExternalSecret",
@@ -471,31 +689,99 @@ def reconcile_zerotrust_secret(spec: dict, name: str, namespace: str, body: dict
             target_kind=target_kind,
             target_namespace=target_namespace,
             target_name=target_name,
-            target_obj=target_obj,
             apps=apps,
+            api_client=api_client,
         )
         adapter.info(
             "Injected secret mapping into workload",
             extra={"event": "workload-injection", "resource_kind": target_kind, "resource_name": target_name},
         )
 
+        # Real health: ExternalSecret is freshly upserted and ESO syncs
+        # asynchronously, so this is typically Provisioning until the first sync.
+        # The @kopf.timer below promotes it to Running once the Secret exists —
+        # we never write a blind 'Running' here.
+        status_patch = _evaluate_status(
+            custom=custom,
+            core=core,
+            namespace=namespace,
+            name=name,
+            spec=spec,
+            existing_conditions=existing_conditions,
+        )
+        generation = body.get("metadata", {}).get("generation")
+        if generation is not None:
+            status_patch["observedGeneration"] = generation
+        _zts_status_patch(custom, namespace, name, status_patch)
+        adapter.info(
+            "ZeroTrustSecret reconciliation completed",
+            extra={"event": "zts-reconcile-success", "phase": status_patch.get("phase")},
+        )
+
+    except (ZeroTrustSecretError, ApiException, ValueError) as exc:
+        status_phase = _PHASE_BLOCKED if "BlockedBySecurity" in str(exc) else _PHASE_DEGRADED
         _zts_status_patch(
             custom,
             namespace,
             name,
             {
-                "phase": "Running",
-                "lastError": "",
-                "targetSecretName": target_secret_name,
+                "phase": status_phase,
+                "lastError": str(exc),
+                "conditions": [_condition(_COND_READY, False, status_phase, str(exc), existing_conditions)],
             },
         )
-        adapter.info("ZeroTrustSecret reconciliation completed", extra={"event": "zts-reconcile-success"})
-
-    except (ZeroTrustSecretError, ApiException, ValueError) as exc:
-        status_phase = "BlockedBySecurity" if "BlockedBySecurity" in str(exc) else "Degraded"
-        _zts_status_patch(custom, namespace, name, {"phase": status_phase, "lastError": str(exc)})
         adapter.exception("ZeroTrustSecret reconciliation failed", extra={"event": "zts-reconcile-error"})
         raise kopf.TemporaryError(str(exc), delay=30) from exc
+
+
+@kopf.timer(GROUP, VERSION, ZTS_PLURAL, interval=ZTS_HEALTH_INTERVAL)
+def reevaluate_zerotrust_secret(spec: dict, name: str, namespace: str, status: dict | None = None, **_: Any) -> None:
+    """Periodic re-evaluation: continuous zero-trust + real sync verification.
+
+    - Promotes Provisioning → Running once ESO has actually synced the Secret.
+    - Demotes to Degraded if the ExternalSecret stops syncing or the Secret
+      disappears (e.g. Vault down / path removed).
+    - Revokes (hard) if the target ZeroTrustApplication drops below Verified.
+
+    Skips objects the create/update handler has not finished provisioning yet so
+    a freshly-created ZTS is not flapped to Degraded before its ExternalSecret
+    exists.
+    """
+    phase = (status or {}).get("phase")
+    if not phase or phase == _PHASE_VALIDATING:
+        return
+
+    api_client = client.ApiClient()
+    custom = client.CustomObjectsApi(api_client)
+    core = client.CoreV1Api(api_client)
+    adapter = logging.LoggerAdapter(
+        logger,
+        ctx(name=name, namespace=namespace, uid="-", reconcile_id=new_reconcile_id(), phase="Health"),
+    )
+
+    try:
+        status_patch = _evaluate_status(
+            custom=custom,
+            core=core,
+            namespace=namespace,
+            name=name,
+            spec=spec,
+            existing_conditions=(status or {}).get("conditions", []),
+        )
+        new_phase = status_patch.get("phase")
+        if new_phase != phase:
+            adapter.info(
+                "ZTS health transition",
+                extra={"event": "zts-health-transition", "previous": phase, "phase": new_phase},
+            )
+        _zts_status_patch(custom, namespace, name, status_patch)
+    except ApiException as exc:
+        if exc.status == 404:
+            return  # ZTS deleted mid-flight
+        adapter.warning(
+            f"ZTS health re-evaluation transient error: {exc.reason}",
+            extra={"event": "zts-health-error", "status": getattr(exc, "status", None)},
+        )
 
 
 @kopf.on.delete(GROUP, VERSION, ZTS_PLURAL)
@@ -527,44 +813,51 @@ def cleanup_zerotrust_secret(spec: dict, name: str, namespace: str, body: dict, 
         if not containers:
             return
 
-        first_container = containers[0]
-        container_name = first_container.get("name")
-        env = first_container.get("env", []) or []
-        volume_mounts = first_container.get("volumeMounts", []) or []
+        default_container = containers[0].get("name")
+        by_name = {c.get("name"): c for c in containers if c.get("name")}
         volumes = pod_spec.get("volumes", []) or []
 
-        env_to_remove = set()
-        volume_names_to_remove = set()
+        # Group removals per target container (mirrors the multi-container injection).
+        env_to_remove: dict[str, set[str]] = {}
+        volume_names_to_remove: set[str] = set()
         for index, item in enumerate(mapping):
             value_type = str(item.get("type", "")).strip()
             local_key = str(item.get("localKey", "")).strip()
+            container_name = str(item.get("containerName", "")).strip() or default_container
             if value_type == "EnvVar":
-                env_to_remove.add(local_key)
+                env_to_remove.setdefault(container_name, set()).add(local_key)
             elif value_type == "VolumeMount":
                 volume_names_to_remove.add(_volume_name(zts_name=name, local_key=local_key, index=index))
 
-        env = [e for e in env if e.get("name") not in env_to_remove]
-        volume_mounts = [m for m in volume_mounts if m.get("name") not in volume_names_to_remove]
+        # Recompute only the containers we actually touched (env/mount removed).
+        patch_containers = []
+        for container_name, container in by_name.items():
+            drop_env = env_to_remove.get(container_name, set())
+            orig_env = container.get("env", []) or []
+            orig_mounts = container.get("volumeMounts", []) or []
+            new_env = [e for e in orig_env if e.get("name") not in drop_env]
+            new_mounts = [m for m in orig_mounts if m.get("name") not in volume_names_to_remove]
+            if new_env != orig_env or new_mounts != orig_mounts:
+                patch_containers.append({
+                    "name": container_name,
+                    "env": new_env,
+                    "volumeMounts": new_mounts,
+                })
+
         volumes = [v for v in volumes if v.get("name") not in volume_names_to_remove]
 
         annotations = target_obj["spec"]["template"].get("metadata", {}).get("annotations", {}) or {}
         annotations.pop(f"zta.devsecops/injected-{_sanitize_name(name)}", None)
         annotations.pop(f"vault-secret-checksum/{_sanitize_name(name)}", None)
 
+        spec_patch: dict[str, Any] = {"volumes": volumes}
+        if patch_containers:
+            spec_patch["containers"] = patch_containers
         patch_body = {
             "spec": {
                 "template": {
                     "metadata": {"annotations": annotations},
-                    "spec": {
-                        "volumes": volumes,
-                        "containers": [
-                            {
-                                "name": container_name,
-                                "env": env,
-                                "volumeMounts": volume_mounts,
-                            }
-                        ],
-                    },
+                    "spec": spec_patch,
                 }
             }
         }
@@ -573,9 +866,18 @@ def cleanup_zerotrust_secret(spec: dict, name: str, namespace: str, body: dict, 
 
     except ApiException as exc:
         if exc.status == 404:
-            return
-        adapter.exception("Failed cleanup for ZeroTrustSecret", extra={"event": "zts-cleanup-error"})
-        raise
+            return  # workload already gone — nothing to clean
+        adapter.exception("Failed cleanup for ZeroTrustSecret (K8s API error)", extra={"event": "zts-cleanup-error"})
+        raise  # transient API error → let kopf retry briefly (finalizer holds, then releases)
+    except (ZeroTrustSecretError, KeyError, ValueError) as exc:
+        # The target workload is malformed/unreadable (no pod template, invalid kind,
+        # already-mutated shape). Injection is moot — log and let the delete proceed
+        # so the finalizer never wedges the ZTS in Terminating.
+        adapter.warning(
+            f"Skipping workload cleanup ({type(exc).__name__}: {exc}); allowing ZTS deletion",
+            extra={"event": "zts-cleanup-skip"},
+        )
+        return
 
 
 @kopf.on.update("", "v1", "secrets", labels={ZTS_MANAGED_LABEL_KEY: ZTS_MANAGED_LABEL_VALUE})
@@ -606,6 +908,7 @@ def on_managed_secret_update(body: dict, namespace: str, name: str, **_: Any) ->
             namespace=zts_namespace,
             plural=ZTS_PLURAL,
             name=zts_name,
+            _request_timeout=_K8S_TIMEOUT,
         )
 
         lifecycle = zts.get("spec", {}).get("lifecycle", {}) or {}
@@ -634,7 +937,7 @@ def on_managed_secret_update(body: dict, namespace: str, name: str, **_: Any) ->
             zts_namespace,
             zts_name,
             {
-                "phase": "Running",
+                "phase": _PHASE_RUNNING,
                 "lastError": "",
                 "lastRotationChecksum": checksum,
             },

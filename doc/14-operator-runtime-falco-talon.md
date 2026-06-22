@@ -89,7 +89,7 @@ Talon are un singur ConfigMap global (`falco-talon-rules` în namespace
 ## §14.4 Cum arată regula Talon
 
 ```python
-# talon.py:42-55
+# talon.py:58-72
 def _build_rule(namespace: str, app_name: str, falco_rule_name: str) -> dict:
     return {
         "name": _rule_name(namespace, app_name),
@@ -118,7 +118,7 @@ Câmpurile:
 ## §14.5 Read-modify-write pe ConfigMap
 
 ```python
-# talon.py:58-81
+# talon.py:74-107
 def upsert_talon_rule(core: client.CoreV1Api, app_namespace: str, app_name: str, falco_rule_name: str) -> None:
     try:
         cm = core.read_namespaced_config_map(name=TALON_CONFIGMAP_NAME, namespace=TALON_NAMESPACE)
@@ -167,7 +167,7 @@ adăuga complexitate disproporționată.
 ## §14.6 Format YAML al rules.yaml
 
 ```python
-# talon.py:12-29
+# talon.py:28-46
 def _parse_rules_yaml(raw: str) -> tuple[dict | list, list, str]:
     parsed = yaml.safe_load(raw) if raw.strip() else []
     if parsed is None:

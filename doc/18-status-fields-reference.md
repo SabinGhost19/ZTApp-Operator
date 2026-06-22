@@ -162,16 +162,71 @@ Scris de **zta-operator** după `validate_admission_with_attestations`.
 
 ### `status.details` (obiect)
 
-Scris de zta-operator pentru detalii Trivy:
+Scris de zta-operator pentru detalii Trivy. Sursă: `supply_chain.py`
+`verify_trivy_threshold` → `_collect_findings`.
 
 ```json
 {
   "highest": "HIGH",
   "threshold": "MEDIUM",
-  "severityCounts": {"CRITICAL": 0, "HIGH": 3, "MEDIUM": 5},
-  "vexExempted": ["CVE-2024-1234"]
+  "counts": {"CRITICAL": 0, "HIGH": 3, "MEDIUM": 5, "LOW": 12},
+  "vexExempted": ["CVE-2024-1234"],
+  "findings": [
+    {
+      "id": "CVE-2024-1234",
+      "pkg": "starlette",
+      "severity": "HIGH",
+      "installed": "0.27.0",
+      "fixedVersion": "0.40.0",
+      "title": "Starlette multipart DoS",
+      "target": "app/requirements.txt",
+      "primaryUrl": "https://nvd.nist.gov/vuln/detail/CVE-2024-1234"
+    }
+  ]
 }
 ```
+
+| Câmp | Tip | Sens |
+|---|---|---|
+| `highest` | string | Cea mai mare severitate găsită (`CRITICAL`…`LOW`, `NONE`) |
+| `threshold` | string | Pragul din policy (`maxVulnerabilities`) |
+| `counts` | obiect | Contor per severitate `{CRITICAL,HIGH,MEDIUM,LOW}` (nu `severityCounts`) |
+| `vexExempted` | string[] | CVE-uri exceptate prin OpenVEX |
+| `findings` | array | Detaliu per-CVE (cap **300**) — `{id, pkg, severity, installed, fixedVersion, title, target, primaryUrl}`. UI linkează `primaryUrl` |
+
+> **Notă:** câmpul de contor se numește **`counts`** (cheia scrisă de cod în
+> `supply_chain.py:113`), nu `severityCounts`. Același obiect `details` e
+> propagat și în `status.errors[].details` la breach și în
+> `status.verifications.trivy` (vezi mai jos).
+
+### `status.runtimeEnforcement` (obiect)
+
+Scris de **zta-operator** la sfârșitul provisioning-ului (`operator.py` ~l.702-765),
+reflectă starea enforcement-ului runtime Falco + Talon pentru aplicație. Vezi
+`14-operator-runtime-falco-talon.md`.
+
+```json
+{
+  "requested": true,
+  "installed": true,
+  "talonRulePatched": true,
+  "missing": [],
+  "reason": ""
+}
+```
+
+| Câmp | Tip | Sens |
+|---|---|---|
+| `requested` | bool | `true` dacă `spec` cere runtime enforcement (`runtime`) |
+| `installed` | bool \| null | **Tri-state:** `null`=necunoscut/necerut, `true`=stack Falco+Talon prezent, `false`=lipsește |
+| `talonRulePatched` | bool | `true` dacă regula a fost adăugată în ConfigMap-ul Talon |
+| `missing` | string[] | Componente lipsă când `installed=false` (ex. CRD/Deployment Talon) |
+| `reason` | string | Mesaj explicativ când `installed=false` |
+
+> Când stack-ul Falco/Talon nu e instalat, operatorul **nu** abortează reconcile-ul:
+> Pod-ul rulează deja, iar UI-ul afișează un banner informativ pe baza
+> `installed=false` + `missing=[...]` în loc de un chip roșu de eroare. Vezi și
+> eroarea `runtime-infrastructure-missing` din `status.errors`.
 
 ### `status.verifications` (obiect, nou)
 
@@ -181,7 +236,11 @@ Ledger per-check, structurat. Vezi `17-error-taxonomy-and-observability.md` §17
 {
   "cosign":      {"passed": true, "reason": "ok", "completedAt": "...", "durationMs": 1234},
   "trivy":       {"passed": true, "reason": "ok", "completedAt": "...", "durationMs": 8901,
-                  "highest": "LOW", "threshold": "MEDIUM", "vexExempted": []},
+                  "highest": "LOW", "threshold": "MEDIUM", "vexExempted": [],
+                  "counts": {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 1, "LOW": 12},
+                  "findings": [{"id": "CVE-...", "pkg": "...", "severity": "LOW",
+                                "installed": "...", "fixedVersion": "...", "title": "...",
+                                "target": "...", "primaryUrl": "..."}]},
   "sbom":        {"passed": true, "reason": "ok", "completedAt": "...", "durationMs": 567,
                   "digest": "sha256:...", "packageCount": 142},
   "policyAttestation": {"passed": true, "reason": "ok", "completedAt": "...", "durationMs": 234,
@@ -271,6 +330,7 @@ Cele două operatoare care pot scrie pe același `status`:
 | `provenance` | (citește) | ✓ |
 | `attestations` | ✓ | ✗ |
 | `details` | ✓ | ✗ |
+| `runtimeEnforcement` | ✓ | ✗ |
 | `verifications` | ✓ | ✗ |
 | `errors` | ✓ | ✗ |
 | `policyMatchDebug` | ✓ | ✗ |

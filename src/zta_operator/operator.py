@@ -742,6 +742,19 @@ async def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, pat
                     "missing": list(exc.missing),
                     "reason": str(exc),
                 })
+            except TalonConfigError as exc:
+                # Detection rule (the Falco ConfigMap) is already applied; the
+                # Talon response rule failed transiently (5xx / RBAC /
+                # conflict-retries-exhausted). Surface a partial state
+                # ("detection active, response pending retry") before the outer
+                # handler marks Degraded and kopf retries the whole reconcile.
+                runtime_enforcement_status.update({
+                    "installed": None,
+                    "talonRulePatched": False,
+                    "reason": f"{exc}; detection rule active, response pending retry",
+                })
+                _status_patch(custom, namespace, name, {"runtimeEnforcement": runtime_enforcement_status})
+                raise
 
 
         _status_patch(

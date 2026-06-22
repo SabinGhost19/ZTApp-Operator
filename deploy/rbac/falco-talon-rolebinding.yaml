@@ -2,7 +2,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: zta-operator-falco-talon-configmap
-  namespace: falco-talon
+  namespace: falco   # must match the Role's namespace (Talon lives in ns `falco`)
 subjects:
   - kind: ServiceAccount
     name: zta-operator

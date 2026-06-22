@@ -2,7 +2,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: zta-operator-falco-talon-configmap
-  namespace: falco-talon
+  namespace: falco   # Talon's falco-talon-rules ConfigMap lives in ns `falco`
 rules:
   - apiGroups: [""]
     resources: ["configmaps"]

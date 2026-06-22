@@ -142,14 +142,17 @@ Pattern „handler thin → service":
      for step in hmac_chain.steps:
          expected = HMAC(secret, metadata_hash || previous_hmac)
          assert step.hmac_result == expected
-6. Verifică Merkle root:
+6. Verifică Merkle root (negociere de versiune):
      leaves = [step.hmac_result for step in steps]
-     root = compute_merkle_root_rfc6962(leaves)
+     # version >= 2 sau algorithm == "rfc6962-sha256" → RFC 6962 (domain-separated);
+     # altfel (legacy/version 1) → SHA-256 plain prin concatenare.
+     root = compute_merkle_root(leaves, rfc6962=(version>=2 or alg=="rfc6962-sha256"))
      assert root == merkle_tree.root_hash
 7. Dacă toate trec:
      patch_status(trustLevel=Verified, provenance.verifiedAt=now,
                   provenance.hmacChain.verified=true,
-                  provenance.merkle.verified=true, ...)
+                  provenance.merkle={verified:true, computedRoot, leafCount,
+                                     merkleVersion, merkleAlgorithm}, ...)
    Altfel:
      raise ProvenanceVerificationError(reason)
 ```

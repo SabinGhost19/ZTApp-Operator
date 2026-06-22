@@ -69,6 +69,56 @@ def _validate_zta(spec: dict[str, Any]) -> list[str]:
     return errors
 
 
+def _validate_zts(spec: dict[str, Any]) -> list[str]:
+    """Fast, dependency-free semantic checks for ZeroTrustSecret.
+
+    Mirrors the cross-field invariants the Kopf reconcile enforces (and the
+    structural CRD schema cannot express): VolumeMount requires mountPath, and
+    timeBasedAccess is not implemented. Also re-asserts required references so a
+    malformed ZTS is refused at `kubectl apply` time instead of looping in
+    reconcile as Degraded.
+    """
+    errors: list[str] = []
+
+    target = spec.get("targetWorkload") or {}
+    if str(target.get("kind", "")).strip() not in {"Deployment", "StatefulSet", "DaemonSet"}:
+        errors.append("spec.targetWorkload.kind must be one of Deployment, StatefulSet, DaemonSet")
+    if not str(target.get("name", "")).strip():
+        errors.append("spec.targetWorkload.name is required")
+
+    app_ref = spec.get("applicationRef") or {}
+    if not str(app_ref.get("name", "")).strip():
+        errors.append("spec.applicationRef.name is required")
+
+    secret_data = spec.get("secretData") or {}
+    if not str(secret_data.get("remotePath", "")).strip():
+        errors.append("spec.secretData.remotePath is required")
+    mapping = secret_data.get("mapping") or []
+    if not mapping:
+        errors.append("spec.secretData.mapping must contain at least one item")
+    for i, item in enumerate(mapping):
+        if not isinstance(item, dict):
+            errors.append(f"spec.secretData.mapping[{i}] must be an object")
+            continue
+        if not str(item.get("remoteKey", "")).strip():
+            errors.append(f"spec.secretData.mapping[{i}].remoteKey is required")
+        if not str(item.get("localKey", "")).strip():
+            errors.append(f"spec.secretData.mapping[{i}].localKey is required")
+        m_type = str(item.get("type", "")).strip()
+        if m_type not in {"EnvVar", "VolumeMount"}:
+            errors.append(f"spec.secretData.mapping[{i}].type must be EnvVar or VolumeMount")
+        if m_type == "VolumeMount" and not str(item.get("mountPath", "")).strip():
+            errors.append(f"spec.secretData.mapping[{i}].mountPath is required when type is VolumeMount")
+
+    ztc = spec.get("zeroTrustConditions") or {}
+    if (ztc.get("timeBasedAccess") or {}).get("enabled", False):
+        errors.append(
+            "spec.zeroTrustConditions.timeBasedAccess.enabled=true is not implemented in this version"
+        )
+
+    return errors
+
+
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok"}
@@ -83,16 +133,19 @@ async def validate(request: Request) -> dict[str, Any]:
     kind = (obj.get("kind") or "").strip()
     spec = obj.get("spec", {}) or {}
 
-    if kind != "ZeroTrustApplication":
-        # Defer to other webhooks for non-ZTA kinds — admit by default.
+    if kind == "ZeroTrustApplication":
+        errors = _validate_zta(spec)
+    elif kind == "ZeroTrustSecret":
+        errors = _validate_zts(spec)
+    else:
+        # Defer to other webhooks for unhandled kinds — admit by default.
         return _admission_response(uid, True, f"webhook does not handle kind={kind}")
 
-    errors = _validate_zta(spec)
     if errors:
         return _admission_response(
             uid,
             False,
-            "ZeroTrustApplication rejected by admission webhook: " + "; ".join(errors),
+            f"{kind} rejected by admission webhook: " + "; ".join(errors),
         )
     return _admission_response(uid, True)
 

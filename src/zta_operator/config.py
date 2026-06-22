@@ -17,12 +17,21 @@ ZTS_MANAGED_LABEL_VALUE = "true"
 ZTS_LABEL_NAME = "zta.devsecops/zts-name"
 ZTS_LABEL_NAMESPACE = "zta.devsecops/zts-namespace"
 
+# Seconds between periodic ZeroTrustSecret re-evaluations (real ExternalSecret
+# sync check + continuous trust re-evaluation / hard revoke). Drives the
+# @kopf.timer in zerotrust_secret.py.
+ZTS_HEALTH_INTERVAL = int(os.getenv("ZTS_HEALTH_INTERVAL", "30"))
+
 SCA_PLURAL = "supplychainattestations"
 SCA_KIND = "SupplyChainAttestation"
 
 DEFAULT_ISSUER = "https://token.actions.githubusercontent.com"
 
-TALON_NAMESPACE = os.getenv("TALON_NAMESPACE", "falco-talon")
+# Talon lives in the `falco` namespace on the authoritative Helm/GitOps path
+# (infra-tools .../falco/helm-release-talon.yaml: metadata.namespace=falco; the
+# operator Helm chart sets TALON_NAMESPACE=falco via falcoTalonRbac.namespace).
+# The default below must match that reality; the env override lets Helm/dev set it.
+TALON_NAMESPACE = os.getenv("TALON_NAMESPACE", "falco")
 TALON_CONFIGMAP_NAME = os.getenv("TALON_CONFIGMAP_NAME", "falco-talon-rules")
 TALON_CONFIGMAP_KEY = os.getenv("TALON_CONFIGMAP_KEY", "rules.yaml")
 

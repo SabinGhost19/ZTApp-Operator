@@ -302,6 +302,22 @@ def build_wasm_plugin(name: str, namespace: str, mode: str, app_profile: str, ow
     }
 
 
+def _image_repository(image: str) -> str:
+    """Bare repository to match Falco's ``container.image.repository`` field.
+
+    Strips an ``@sha256:`` digest and/or a ``:tag`` while preserving a registry
+    ``host:port``. Falco reports the repo without tag/digest, so the previous
+    ``image.rsplit(":", 1)[0]`` produced ``repo@sha256`` for digest-pinned images
+    (which the admission webhook requires) and the rule never matched.
+    """
+    ref = image.split("@", 1)[0]          # drop @sha256:...
+    slash = ref.rfind("/")
+    colon = ref.rfind(":")
+    if colon > slash:                      # ':' after the last '/' is a tag → drop it
+        ref = ref[:colon]
+    return ref
+
+
 def build_falco_rule_configmap(name: str, namespace: str, image: str, allowed_paths: list[str], owner: dict) -> dict:
     rule_name = f"Unauthorized_Write_{namespace}_{name}".replace("-", "_")
     allowed_expr = " and ".join([f'fd.name != \"{p}\"' for p in allowed_paths])
@@ -315,7 +331,7 @@ def build_falco_rule_configmap(name: str, namespace: str, image: str, allowed_pa
         + f"  desc: Detect writes outside allowed paths for {namespace}/{name}\n"
         + "  condition: >\n"
         + "    evt.type = open and evt.dir = < and container.image.repository = \""
-        + image.rsplit(":", 1)[0]
+        + _image_repository(image)
         + "\" and "
         + allowed_expr
         + "\n"
