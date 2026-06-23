@@ -188,6 +188,14 @@ spec:
                 # operators patch the same CR concurrently).
                 specReconcileHash:
                   type: string
+                # Falco+Talon runtime-enforcement state for this app's
+                # runtimeSecurity.onCompromise policy. The operator writes
+                # requested/installed/talonRulePatched (+ missing[] when the
+                # stack is absent); preserve-unknown avoids per-field churn and
+                # — crucially — stops the API server from pruning the field.
+                runtimeEnforcement:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
       subresources:
         status: {}
       additionalPrinterColumns:

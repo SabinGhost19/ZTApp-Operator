@@ -358,3 +358,23 @@ def test_get_target_rejects_invalid_kind():
 def test_get_target_requires_name():
     with pytest.raises(ZeroTrustSecretError):
         _get_target("default", {"kind": "Deployment", "name": ""}, FakeApps(make_workload([])), FakeApiClient())
+
+
+# --------------------------------------------------------------------------- #
+# lastError formatting (no raw HTTP dump from ApiException)
+# --------------------------------------------------------------------------- #
+def test_format_error_trims_apiexception():
+    from zta_operator.zerotrust_secret import _format_error
+
+    exc = ApiException(status=404, reason="Not Found")
+    exc.body = '{"kind":"Status","message":"deployments.apps \\"orders-api\\" not found","reason":"NotFound","code":404}'
+    out = _format_error(exc)
+    assert out.startswith("404")
+    assert "deployments.apps" in out
+    assert "HTTPHeaderDict" not in out and "HTTP response" not in out
+
+
+def test_format_error_passes_through_plain_exceptions():
+    from zta_operator.zerotrust_secret import _format_error
+
+    assert _format_error(ZeroTrustSecretError("plain message")) == "plain message"

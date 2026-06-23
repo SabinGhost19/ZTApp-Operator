@@ -54,6 +54,23 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _format_error(exc: Exception) -> str:
+    """Human-readable error for status.lastError. For a Kubernetes ApiException
+    this extracts the API `status.message` (e.g. 'deployments.apps "x" not found')
+    instead of dumping the full HTTP response (headers + body) into the field."""
+    if isinstance(exc, ApiException):
+        message = ""
+        try:
+            body = json.loads(exc.body) if exc.body else {}
+            message = str(body.get("message", "")).strip()
+        except (ValueError, TypeError):
+            message = ""
+        message = message or (exc.reason or "Kubernetes API error")
+        status = getattr(exc, "status", "") or ""
+        return f"{status} {message}".strip()
+    return str(exc)
+
+
 def _condition(cond_type: str, ok: bool, reason: str, message: str, existing: list[dict] | None) -> dict:
     """Build one status condition, preserving lastTransitionTime when the
     boolean state is unchanged (so transition timestamps stay meaningful)."""
@@ -719,15 +736,16 @@ def reconcile_zerotrust_secret(spec: dict, name: str, namespace: str, body: dict
         )
 
     except (ZeroTrustSecretError, ApiException, ValueError) as exc:
-        status_phase = _PHASE_BLOCKED if "BlockedBySecurity" in str(exc) else _PHASE_DEGRADED
+        message = _format_error(exc)
+        status_phase = _PHASE_BLOCKED if "BlockedBySecurity" in message else _PHASE_DEGRADED
         _zts_status_patch(
             custom,
             namespace,
             name,
             {
                 "phase": status_phase,
-                "lastError": str(exc),
-                "conditions": [_condition(_COND_READY, False, status_phase, str(exc), existing_conditions)],
+                "lastError": message,
+                "conditions": [_condition(_COND_READY, False, status_phase, message, existing_conditions)],
             },
         )
         adapter.exception("ZeroTrustSecret reconciliation failed", extra={"event": "zts-reconcile-error"})
