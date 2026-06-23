@@ -1,3 +1,10 @@
+## [1.13.1](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.13.0...v1.13.1) (2026-06-23)
+
+
+### Bug Fixes
+
+* zts form ([1b20cc8](https://github.com/SabinGhost19/ZTApp-Operator/commit/1b20cc87b634da607f734943c728c484f8af0fa8))
+
 # [1.13.0](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.12.0...v1.13.0) (2026-06-22)
 
 
