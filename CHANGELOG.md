@@ -1,3 +1,10 @@
+## [1.13.2](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.13.1...v1.13.2) (2026-06-24)
+
+
+### Bug Fixes
+
+* **operator:** don't wedge ZTA finalizer on transient TalonConfigError (graceful cleanup) ([7e18060](https://github.com/SabinGhost19/ZTApp-Operator/commit/7e18060c96ff512197895ec565e862165b735fb9))
+
 ## [1.13.1](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.13.0...v1.13.1) (2026-06-23)
 
 
