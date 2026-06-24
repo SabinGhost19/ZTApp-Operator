@@ -1,3 +1,10 @@
+## [1.13.3](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.13.2...v1.13.3) (2026-06-24)
+
+
+### Bug Fixes
+
+* **vault:** grant ESO read on prod/* + seed orders-api KV ([73576fe](https://github.com/SabinGhost19/ZTApp-Operator/commit/73576fe934e3519bffe87e31b2b3a236bba67fc3))
+
 ## [1.13.2](https://github.com/SabinGhost19/ZTApp-Operator/compare/v1.13.1...v1.13.2) (2026-06-24)
 
 
