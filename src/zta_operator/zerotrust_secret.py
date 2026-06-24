@@ -357,9 +357,7 @@ def _inject_mapping_to_workload(
         else:
             raise ZeroTrustSecretError("mapping.type must be EnvVar or VolumeMount")
 
-    annotations = target_obj["spec"]["template"].get("metadata", {}).get("annotations", {}) or {}
     injected_marker_key = f"zta.devsecops/injected-{_sanitize_name(zts_name)}"
-    annotations[injected_marker_key] = "true"
 
     patch_containers = [
         {
@@ -370,10 +368,14 @@ def _inject_mapping_to_workload(
         for cn in sorted(touched)
     ]
 
+    # Patch ONLY our marker key (not the full re-read annotations map). Strategic
+    # merge merges annotation maps key-by-key, so concurrent annotation writes
+    # from other controllers are preserved instead of being clobbered by a
+    # read-modify-write of the whole map.
     patch_body = {
         "spec": {
             "template": {
-                "metadata": {"annotations": annotations},
+                "metadata": {"annotations": {injected_marker_key: "true"}},
                 "spec": {
                     "volumes": volumes,
                     "containers": patch_containers,
@@ -631,16 +633,18 @@ def _apply_rolling_restart_annotation(
     zts_name: str,
     checksum: str,
 ) -> None:
-    target_obj = _read_workload(target_kind, target_namespace, target_name, apps, api_client)
+    # Validate the workload still exists before patching (raises if not); the
+    # only-key merge patch below does not need the full object.
+    _read_workload(target_kind, target_namespace, target_name, apps, api_client)
 
-    annotations = target_obj["spec"]["template"].get("metadata", {}).get("annotations", {}) or {}
-    annotations[f"vault-secret-checksum/{_sanitize_name(zts_name)}"] = checksum
-
+    checksum_key = f"vault-secret-checksum/{_sanitize_name(zts_name)}"
+    # Merge only our checksum annotation (preserves concurrent annotation writes
+    # from other controllers; strategic merge merges annotation maps key-by-key).
     patch_body = {
         "spec": {
             "template": {
                 "metadata": {
-                    "annotations": annotations,
+                    "annotations": {checksum_key: checksum},
                 }
             }
         }
@@ -864,9 +868,14 @@ def cleanup_zerotrust_secret(spec: dict, name: str, namespace: str, body: dict, 
 
         volumes = [v for v in volumes if v.get("name") not in volume_names_to_remove]
 
-        annotations = target_obj["spec"]["template"].get("metadata", {}).get("annotations", {}) or {}
-        annotations.pop(f"zta.devsecops/injected-{_sanitize_name(name)}", None)
-        annotations.pop(f"vault-secret-checksum/{_sanitize_name(name)}", None)
+        # Delete ONLY our two annotations via null-merge. Omitting a key from a
+        # merge patch does NOT remove it (so the old read-pop-resend never
+        # actually deleted them); setting the value to null does. This also
+        # avoids clobbering concurrent annotation writes from other controllers.
+        removed_annotations = {
+            f"zta.devsecops/injected-{_sanitize_name(name)}": None,
+            f"vault-secret-checksum/{_sanitize_name(name)}": None,
+        }
 
         spec_patch: dict[str, Any] = {"volumes": volumes}
         if patch_containers:
@@ -874,7 +883,7 @@ def cleanup_zerotrust_secret(spec: dict, name: str, namespace: str, body: dict, 
         patch_body = {
             "spec": {
                 "template": {
-                    "metadata": {"annotations": annotations},
+                    "metadata": {"annotations": removed_annotations},
                     "spec": spec_patch,
                 }
             }

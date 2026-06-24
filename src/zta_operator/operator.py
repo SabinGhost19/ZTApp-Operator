@@ -318,10 +318,13 @@ async def _reconcile_impl(spec: dict, name: str, namespace: str, body: dict, pat
     spec_hash = _hash_desired_spec(desired_spec)
     metadata = body.get("metadata", {}) or {}
     annotations = metadata.get("annotations", {}) or {}
-    prev_hash = (
-        str(current_status.get("specReconcileHash", "") or "").strip()
-        or str(annotations.get("zta.devsecops/spec-reconcile-hash", "") or "").strip()
-    )
+    # Single source of truth: status.specReconcileHash (present in the CRD
+    # schema). The legacy annotation fallback is intentionally NOT consulted on
+    # read — if status and the annotation diverged (one write failed), the stale
+    # annotation produced spurious reconcile loops. Reading status only removes
+    # that divergence; on an un-upgraded CRD the field is simply empty and the
+    # idempotency short-circuit is skipped (correct, just less efficient).
+    prev_hash = str(current_status.get("specReconcileHash", "") or "").strip()
     prev_phase = str(current_status.get("phase", "") or "").strip()
     prev_trust = str(current_status.get("trustLevel", "") or "").strip()
     has_error = bool(str(current_status.get("lastError", "") or "").strip())
@@ -996,6 +999,13 @@ def cleanup(spec: dict, name: str, namespace: str, body: dict, **_: Any) -> None
     try:
         delete_talon_rule(core=core, app_namespace=namespace, app_name=name)
         adapter.info("Removed Talon rule from ConfigMap", extra={"event": "talon-configmap-delete"})
-    except TalonConfigError:
-        adapter.exception("Failed to cleanup Talon rule", extra={"event": "cleanup-error"})
-        raise
+    except TalonInfrastructureMissingError:
+        # Talon stack already absent — nothing to clean; let deletion proceed.
+        adapter.info("Talon infrastructure absent; skipping rule cleanup", extra={"event": "cleanup-skip"})
+    except Exception:
+        # Best-effort cleanup: a transient Talon/ConfigMap error (API hiccup,
+        # RBAC, 409) must NOT wedge the finalizer — otherwise the
+        # ZeroTrustApplication is stuck Terminating forever. An orphaned per-app
+        # rule in the shared ConfigMap is low-harm (it no longer matches a live
+        # pod) and is overwritten on the next Helm/operator reconcile.
+        adapter.exception("Talon rule cleanup failed; proceeding with deletion anyway", extra={"event": "cleanup-error"})

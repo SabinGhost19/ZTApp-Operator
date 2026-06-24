@@ -20,11 +20,20 @@ Each rule receives a uniform context:
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Bound each CEL evaluation so a pathological/expensive customRule cannot hang
+# the reconcile loop indefinitely. CEL is non-Turing-complete, so the realistic
+# risk is a very large expression rather than an infinite loop; a wall-clock
+# timeout plus a length cap is sufficient defense.
+_CEL_EVAL_TIMEOUT_SECONDS = float(os.getenv("CEL_EVAL_TIMEOUT_SECONDS", "2"))
+_CEL_MAX_EXPRESSION_LEN = int(os.getenv("CEL_MAX_EXPRESSION_LEN", "4096"))
 
 # celpy ships with very chatty internal loggers that emit one INFO line per
 # AST node visited. On non-trivial CEL expressions this floods the operator
@@ -103,16 +112,38 @@ def evaluate_custom_rules(
                 "fired": False, "outcome": "", "error": "no expression",
             })
             continue
+        if len(expression) > _CEL_MAX_EXPRESSION_LEN:
+            msg = f"expression too long ({len(expression)} > {_CEL_MAX_EXPRESSION_LEN} chars)"
+            result.errors.append(f"rule {name!r} rejected: {msg}")
+            result.evaluations.append({
+                "name": name, "expression": expression[:200], "action": action,
+                "fired": False, "outcome": "", "error": msg,
+            })
+            continue
+        # Evaluate in a worker thread with a wall-clock timeout. On timeout we
+        # do NOT block on shutdown (the celpy eval is not interruptible), so a
+        # pathological rule leaks at most one thread instead of wedging reconcile.
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
-            program = env.program(env.compile(expression))
-            outcome = program.evaluate(cel_context)
+            future = executor.submit(lambda: env.program(env.compile(expression)).evaluate(cel_context))
+            outcome = future.result(timeout=_CEL_EVAL_TIMEOUT_SECONDS)
+        except concurrent.futures.TimeoutError:
+            result.errors.append(f"rule {name!r} evaluation timed out (> {_CEL_EVAL_TIMEOUT_SECONDS}s)")
+            result.evaluations.append({
+                "name": name, "expression": expression, "action": action,
+                "fired": False, "outcome": "", "error": "timeout",
+            })
+            executor.shutdown(wait=False)
+            continue
         except Exception as exc:
             result.errors.append(f"rule {name!r} evaluation failed: {exc}")
             result.evaluations.append({
                 "name": name, "expression": expression, "action": action,
                 "fired": False, "outcome": "", "error": str(exc),
             })
+            executor.shutdown(wait=False)
             continue
+        executor.shutdown(wait=False)
 
         truthy = bool(outcome)
         fired = False

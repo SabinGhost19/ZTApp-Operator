@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import base64
 import json
+import shutil
 import logging
 import os
 import subprocess
@@ -344,11 +345,16 @@ def _guacone_push_files(predicate_files: list[str]) -> bool:
     return True
 
 
+def _work_dir_for(image: str) -> str:
+    """Deterministic per-(process, image) scratch dir for predicate files."""
+    return f"/tmp/guac-{os.getpid()}-{abs(hash(image)) % 10**8}"
+
+
 def _write_predicate_files(image: str) -> list[str]:
     """Download SBOM/VEX attestations with cosign, extract raw predicates,
     write each one as a JSON file in a temp dir. Returns the list of paths.
     """
-    work_dir = f"/tmp/guac-{os.getpid()}-{abs(hash(image)) % 10**8}"
+    work_dir = _work_dir_for(image)
     os.makedirs(work_dir, exist_ok=True)
     written: list[str] = []
 
@@ -373,7 +379,7 @@ def _write_predicate_files(image: str) -> list[str]:
     return written
 
 
-def _ingest_worker(image: str, namespace: str, app_name: str) -> None:
+def _ingest_worker_impl(image: str, namespace: str, app_name: str) -> None:
     """Background job: extract SBOM/VEX from OCI attestations and push them
     into GUAC via ``guacone collect files`` (which bypasses ingestor's DSSE
     verification, the only path that works for cosign-keyless attestations).
@@ -426,6 +432,17 @@ def _ingest_worker(image: str, namespace: str, app_name: str) -> None:
             "GUAC ingestion did not complete: both guacone and the GraphQL deployment edge "
             "failed. Check GUAC service health.",
         )
+
+
+def _ingest_worker(image: str, namespace: str, app_name: str) -> None:
+    """Public entry: run the ingestion and ALWAYS clean up the /tmp/guac-*
+    scratch dir, even on error (the impl can still raise despite its
+    'never raises' intent), so temp files don't accumulate on the operator pod.
+    """
+    try:
+        _ingest_worker_impl(image, namespace, app_name)
+    finally:
+        shutil.rmtree(_work_dir_for(image), ignore_errors=True)
 
 
 def _split_oci_reference(image: str) -> tuple[str, str, str]:
