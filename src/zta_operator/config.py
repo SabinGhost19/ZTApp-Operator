@@ -19,8 +19,12 @@ ZTS_LABEL_NAMESPACE = "zta.devsecops/zts-namespace"
 
 # Seconds between periodic ZeroTrustSecret re-evaluations (real ExternalSecret
 # sync check + continuous trust re-evaluation / hard revoke). Drives the
-# @kopf.timer in zerotrust_secret.py.
-ZTS_HEALTH_INTERVAL = int(os.getenv("ZTS_HEALTH_INTERVAL", "30"))
+# @kopf.timer in zerotrust_secret.py. Default 5 min: the create/update handlers
+# react immediately to ZTS changes, so this timer only catches *external* drift
+# (Vault/ESO sync loss, trust revocation, rotation) — a few minutes of latency
+# there is an acceptable trade-off for far less reconcile churn and log noise.
+# Tunable via the ZTS_HEALTH_INTERVAL env var if faster drift detection is wanted.
+ZTS_HEALTH_INTERVAL = int(os.getenv("ZTS_HEALTH_INTERVAL", "300"))
 
 SCA_PLURAL = "supplychainattestations"
 SCA_KIND = "SupplyChainAttestation"

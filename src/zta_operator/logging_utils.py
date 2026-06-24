@@ -42,6 +42,15 @@ def configure_logging() -> logging.Logger:
     handler.setFormatter(JsonFormatter())
     logger.addHandler(handler)
     logger.propagate = False
+
+    # kopf emits an INFO line on its per-object logger after EVERY successful
+    # handler/timer run (e.g. "Timer 'reevaluate_zerotrust_secret' succeeded.").
+    # With a periodic health timer on every ZeroTrustSecret this floods stdout
+    # with zero signal. Drop kopf's per-object success chatter (WARNING+ still
+    # surfaces failed handlers); our own "zta-operator" JSON logs are separate
+    # and unaffected.
+    logging.getLogger("kopf.objects").setLevel(logging.WARNING)
+
     return logger
 
 
