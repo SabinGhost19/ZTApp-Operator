@@ -1,7 +1,7 @@
 apiVersion: devsecops.licenta.ro/v1
 kind: ZeroTrustSecret
 metadata:
-  name: demo-api-db-secret
+  name: demo-api-zts-secret
   namespace: default
 spec:
   applicationRef:
@@ -14,7 +14,7 @@ spec:
   secretStoreRef:
     kind: ClusterSecretStore
     name: vault-backend
-  targetSecretName: demo-api-db-secret
+  targetSecretName: demo-api-zts-secret
   secretData:
     remotePath: secret/data/prod/demo-api/config
     mapping:
